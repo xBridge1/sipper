@@ -1,5 +1,7 @@
 from ciper.findings import Finding
 
+from scapy.layers.inet import IP, TCP
+
 
 def detect_syn_failures(flows):
     findings = []
@@ -116,6 +118,46 @@ def detect_tcp_retransmissions(flows):
                     f"Direction: {first.direction}",
                     f"Retransmissions: {len(retransmissions)}",
                 ],
+            )
+        )
+
+    return findings
+
+def detect_tcp_resets(flows):
+    findings = []
+
+    for flow in flows.values():
+        if not flow.rst:
+            continue
+
+        reset_packet = None
+
+        for packet in flow.packets:
+            if TCP in packet and packet[TCP].flags & 0x04:
+                reset_packet = packet
+                break
+
+        if reset_packet is None:
+            continue
+
+        findings.append(
+            Finding(
+                type="tcp_reset",
+                severity="high",
+                confidence=0.95,
+                source_ip=reset_packet[IP].src,
+                destination_ip=reset_packet[IP].dst,
+                description="TCP connection was reset unexpectedly.",
+                evidence=[
+                    f"Source: {reset_packet[IP].src}:{reset_packet[TCP].sport}",
+                    f"Destination: {reset_packet[IP].dst}:{reset_packet[TCP].dport}",
+                    "RST observed: yes",
+                ],
+                recommendation=(
+                    "Check whether the application rejected the connection, "
+                    "a firewall terminated the session, or the service "
+                    "crashed."
+                ),
             )
         )
 

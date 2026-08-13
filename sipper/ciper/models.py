@@ -55,3 +55,22 @@ class Finding:
     description: str
     evidence: list[str]
     recommendation: str = ""
+
+@dataclass
+class UDPFlow:
+    source_ip: str
+    source_port: int
+    destination_ip: str
+    destination_port: int
+
+    packet_count: int = 0
+    byte_count: int = 0
+
+    packets_forward: int = 0
+    packets_reverse: int = 0
+
+    packets: list = field(default_factory=list)
+
+    @property
+    def response_packets(self):
+        return self.packets_reverse

@@ -32,6 +32,16 @@ def main():
         )
 
     print()
+    print("=== UDP Flows ===")
+
+    for flow in engine_result["udp_flows"].values():
+        print(
+            f"{flow.source_ip}:{flow.source_port} -> "
+            f"{flow.destination_ip}:{flow.destination_port} "
+            f"({flow.packet_count} pacotes)"
+        )
+
+    print()
     print("=== FINDINGS ===")
 
     if not engine_result["findings"]:
