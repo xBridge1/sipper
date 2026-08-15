@@ -42,6 +42,17 @@ def main():
         )
 
     print()
+    print("=== ICMP Flows ===")
+
+    for flow in engine_result["icmp_flows"].values():
+        print(
+            f"{flow.source_ip} -> "
+            f"{flow.destination_ip} "
+            f"(requests: {flow.echo_requests}, "
+            f"replies: {flow.echo_replies})"
+        )
+
+    print()
     print("=== FINDINGS ===")
 
     if not engine_result["findings"]:

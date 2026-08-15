@@ -1,6 +1,7 @@
 from collections import defaultdict
+from dataclasses import dataclass, field
 
-from scapy.layers.inet import IP, TCP
+from scapy.layers.inet import IP, TCP, ICMP
 
 from ciper.models import TCPFlow
 
@@ -8,7 +9,6 @@ from ciper.models import TCPFlow
 def build_tcp_flows(packets):
     packet_groups = defaultdict(list)
 
-    # Primeiro agrupamos os pacotes por conexão
     for packet in packets:
         if IP not in packet or TCP not in packet:
             continue
@@ -18,7 +18,6 @@ def build_tcp_flows(packets):
         source_port = packet[TCP].sport
         destination_port = packet[TCP].dport
 
-        # Porta 0 não representa uma conexão TCP válida
         if source_port == 0 or destination_port == 0:
             continue
 
@@ -29,7 +28,6 @@ def build_tcp_flows(packets):
 
         packet_groups[flow_key].append(packet)
 
-    # Depois transformamos cada grupo em um TCPFlow
     flows = {}
 
     for flow_key, flow_packets in packet_groups.items():
@@ -86,5 +84,57 @@ def build_tcp_flows(packets):
                 flow.rst = True
 
         flows[flow_key] = flow
+
+    return flows
+
+
+@dataclass
+class ICMPFlow:
+    source_ip: str
+    destination_ip: str
+    echo_requests: int = 0
+    echo_replies: int = 0
+    packets: list = field(default_factory=list)
+
+
+def build_icmp_flows(packets):
+    flows = {}
+
+    for packet in packets:
+        if IP not in packet or ICMP not in packet:
+            continue
+
+        icmp_type = packet[ICMP].type
+
+        if icmp_type not in (0, 8):
+            continue
+
+        source_ip = packet[IP].src
+        destination_ip = packet[IP].dst
+
+        if icmp_type == 8:
+            key = (source_ip, destination_ip)
+            reverse_key = (destination_ip, source_ip)
+        else:
+            key = (destination_ip, source_ip)
+            reverse_key = (source_ip, destination_ip)
+
+        if key in flows:
+            flow = flows[key]
+        elif reverse_key in flows:
+            flow = flows[reverse_key]
+        else:
+            flow = ICMPFlow(
+                source_ip=source_ip if icmp_type == 8 else destination_ip,
+                destination_ip=destination_ip if icmp_type == 8 else source_ip,
+            )
+            flows[key] = flow
+
+        flow.packets.append(packet)
+
+        if icmp_type == 8:
+            flow.echo_requests += 1
+        elif icmp_type == 0:
+            flow.echo_replies += 1
 
     return flows
