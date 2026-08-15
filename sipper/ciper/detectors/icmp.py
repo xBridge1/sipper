@@ -34,3 +34,33 @@ def detect_icmp_no_response(flows):
         )
 
     return findings
+
+def detect_icmp_unreachable(flows):
+    findings = []
+
+    for flow in flows.values():
+        if flow.unreachable_messages == 0:
+            continue
+
+        findings.append(
+            Finding(
+                type="icmp_destination_unreachable",
+                severity="high",
+                confidence=0.95,
+                source_ip=flow.source_ip,
+                destination_ip=flow.destination_ip,
+                description="ICMP Destination Unreachable was observed.",
+                evidence=[
+                    f"Source: {flow.source_ip}",
+                    f"Destination: {flow.destination_ip}",
+                    f"Unreachable messages: {flow.unreachable_messages}",
+                ],
+                recommendation=(
+                    "Check whether the destination host, network, or "
+                    "service is reachable and whether a firewall is "
+                    "blocking the traffic."
+                ),
+            )
+        )
+
+    return findings

@@ -94,6 +94,8 @@ class ICMPFlow:
     destination_ip: str
     echo_requests: int = 0
     echo_replies: int = 0
+    unreachable_messages: int = 0
+    time_exceeded_messages: int = 0
     packets: list = field(default_factory=list)
 
 
@@ -106,7 +108,7 @@ def build_icmp_flows(packets):
 
         icmp_type = packet[ICMP].type
 
-        if icmp_type not in (0, 8):
+        if icmp_type not in (0, 3, 8, 11):
             continue
 
         source_ip = packet[IP].src
@@ -115,9 +117,12 @@ def build_icmp_flows(packets):
         if icmp_type == 8:
             key = (source_ip, destination_ip)
             reverse_key = (destination_ip, source_ip)
-        else:
+        elif icmp_type == 0:
             key = (destination_ip, source_ip)
             reverse_key = (source_ip, destination_ip)
+        else:
+            key = (source_ip, destination_ip)
+            reverse_key = (destination_ip, source_ip)
 
         if key in flows:
             flow = flows[key]
@@ -125,8 +130,8 @@ def build_icmp_flows(packets):
             flow = flows[reverse_key]
         else:
             flow = ICMPFlow(
-                source_ip=source_ip if icmp_type == 8 else destination_ip,
-                destination_ip=destination_ip if icmp_type == 8 else source_ip,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
             )
             flows[key] = flow
 
@@ -136,5 +141,9 @@ def build_icmp_flows(packets):
             flow.echo_requests += 1
         elif icmp_type == 0:
             flow.echo_replies += 1
+        elif icmp_type == 3:
+            flow.unreachable_messages += 1
+        elif icmp_type == 11:
+            flow.time_exceeded_messages += 1
 
     return flows
