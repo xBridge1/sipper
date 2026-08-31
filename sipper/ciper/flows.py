@@ -96,6 +96,9 @@ class ICMPFlow:
     echo_replies: int = 0
     unreachable_messages: int = 0
     time_exceeded_messages: int = 0
+    redirect_messages: int = 0
+    parameter_problem_messages: int = 0
+    unreachable_codes: list[int] = field(default_factory=list)
     packets: list = field(default_factory=list)
 
 
@@ -108,7 +111,7 @@ def build_icmp_flows(packets):
 
         icmp_type = packet[ICMP].type
 
-        if icmp_type not in (0, 3, 8, 11):
+        if icmp_type not in (0, 3, 5, 8, 11, 12):
             continue
 
         source_ip = packet[IP].src
@@ -143,7 +146,12 @@ def build_icmp_flows(packets):
             flow.echo_replies += 1
         elif icmp_type == 3:
             flow.unreachable_messages += 1
+            flow.unreachable_codes.append(packet[ICMP].code)
+        elif icmp_type == 5:
+            flow.redirect_messages += 1
         elif icmp_type == 11:
             flow.time_exceeded_messages += 1
+        elif icmp_type == 12:
+            flow.parameter_problem_messages += 1
 
     return flows

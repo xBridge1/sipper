@@ -1,0 +1,42 @@
+THEMES = {
+    "dark": {
+        "bg": "#050505",
+        "panel": "#101010",
+        "panel_alt": "#161616",
+        "surface": "#0C0C0C",
+        "border": "#3A1217",
+        "text": "#F5EDEE",
+        "muted": "#B08F94",
+        "accent": "#C1121F",
+        "accent_alt": "#8F0D18",
+        "danger": "#FF5A5F",
+        "warning": "#FF9F1C",
+        "info": "#E5383B",
+        "success": "#52B788",
+        "selection": "#3D1218",
+    },
+    "light": {
+        "bg": "#EEF4F8",
+        "panel": "#FFFFFF",
+        "panel_alt": "#DDEAF1",
+        "surface": "#F7FBFD",
+        "border": "#C6D8E3",
+        "text": "#163042",
+        "muted": "#5E798A",
+        "accent": "#169E93",
+        "accent_alt": "#117B73",
+        "danger": "#D9534F",
+        "warning": "#E09A2B",
+        "info": "#2D7FD3",
+        "success": "#2F9F62",
+        "selection": "#CFE8E7",
+    },
+}
+
+FONTS = {
+    "title": ("Segoe UI", 24),
+    "subtitle": ("Segoe UI", 13),
+    "body": ("Segoe UI", 10),
+    "small": ("Segoe UI", 9),
+    "mono": ("Consolas", 10),
+}

@@ -66,6 +66,9 @@ class UDPFlow:
     packet_count: int = 0
     byte_count: int = 0
 
+    first_timestamp: float | None = None
+    last_timestamp: float | None = None
+
     packets_forward: int = 0
     packets_reverse: int = 0
 
@@ -74,3 +77,10 @@ class UDPFlow:
     @property
     def response_packets(self):
         return self.packets_reverse
+
+    @property
+    def duration(self):
+        if self.first_timestamp is None or self.last_timestamp is None:
+            return 0.0
+
+        return self.last_timestamp - self.first_timestamp

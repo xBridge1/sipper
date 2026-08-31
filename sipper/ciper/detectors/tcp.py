@@ -7,7 +7,7 @@ def detect_syn_failures(flows):
     findings = []
 
     for flow in flows.values():
-        if flow.syn and not flow.syn_ack and not flow.established:
+        if flow.syn and not flow.syn_ack and not flow.established and not flow.rst:
             finding = Finding(
                 type="tcp_syn_failure",
                 severity="high",
@@ -78,6 +78,45 @@ def detect_slow_handshakes(flows):
 
     return findings
 
+
+def detect_tcp_handshake_incomplete(flows):
+    findings = []
+
+    for flow in flows.values():
+        if not flow.syn:
+            continue
+
+        if not flow.syn_ack:
+            continue
+
+        if flow.ack:
+            continue
+
+        findings.append(
+            Finding(
+                type="tcp_handshake_incomplete",
+                severity="medium",
+                confidence=0.90,
+                source_ip=flow.source_ip,
+                destination_ip=flow.destination_ip,
+                description="TCP handshake started but was not completed.",
+                recommendation=(
+                    "Check whether the client completed the handshake, "
+                    "whether packets were dropped, or whether a middlebox "
+                    "interrupted the connection setup."
+                ),
+                evidence=[
+                    f"Source: {flow.source_ip}:{flow.source_port}",
+                    f"Destination: {flow.destination_ip}:{flow.destination_port}",
+                    "SYN observed: yes",
+                    "SYN/ACK observed: yes",
+                    "ACK observed: no",
+                ],
+            )
+        )
+
+    return findings
+
 from ciper.tcp_tracker import track_tcp_packets
 
 
@@ -97,12 +136,20 @@ def detect_tcp_retransmissions(flows):
             continue
 
         first = retransmissions[0]
+        retransmission_count = len(retransmissions)
+
+        if retransmission_count >= 2:
+            severity = "high"
+            confidence = 0.95
+        else:
+            severity = "medium"
+            confidence = 0.90
 
         findings.append(
             Finding(
                 type="tcp_retransmission",
-                severity="medium",
-                confidence=0.90,
+                severity=severity,
+                confidence=confidence,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
                 description="TCP retransmission detected.",
@@ -116,8 +163,49 @@ def detect_tcp_retransmissions(flows):
                     f"Sequence: {first.sequence}",
                     f"Payload: {first.payload_length} bytes",
                     f"Direction: {first.direction}",
-                    f"Retransmissions: {len(retransmissions)}",
+                    f"Retransmissions: {retransmission_count}",
                 ],
+            )
+        )
+
+    return findings
+
+
+def detect_tcp_handshake_reset(flows):
+    findings = []
+
+    for flow in flows.values():
+        if not flow.syn or flow.established or not flow.rst:
+            continue
+
+        reset_packet = None
+
+        for packet in flow.packets:
+            if TCP in packet and packet[TCP].flags & 0x04:
+                reset_packet = packet
+                break
+
+        if reset_packet is None:
+            continue
+
+        findings.append(
+            Finding(
+                type="tcp_handshake_reset",
+                severity="high",
+                confidence=0.95,
+                source_ip=reset_packet[IP].src,
+                destination_ip=reset_packet[IP].dst,
+                description="TCP connection setup was reset before completion.",
+                evidence=[
+                    f"Source: {reset_packet[IP].src}:{reset_packet[TCP].sport}",
+                    f"Destination: {reset_packet[IP].dst}:{reset_packet[TCP].dport}",
+                    "RST observed during handshake: yes",
+                ],
+                recommendation=(
+                    "Check whether the destination port is closed, a firewall "
+                    "rejected the connection, or an intermediate device reset "
+                    "the session during setup."
+                ),
             )
         )
 

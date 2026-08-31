@@ -43,6 +43,13 @@ def build_udp_flows(packets):
             flow.packets.append(packet)
             flow.packet_count += 1
 
+            timestamp = float(packet.time)
+
+            if flow.first_timestamp is None:
+                flow.first_timestamp = timestamp
+
+            flow.last_timestamp = timestamp
+
             if UDP in packet:
                 flow.byte_count += len(bytes(packet[UDP]))
 
