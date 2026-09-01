@@ -1,6 +1,6 @@
 import sys
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QPropertyAnimation, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -312,7 +312,7 @@ class TrafficChart(QWidget):
         super().__init__()
         self.series = []
         self.labels = []
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(175)
 
     def set_data(self, series, labels):
         self.series = series
@@ -449,7 +449,7 @@ class SipperWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SIPPER")
-        self.resize(1540, 940)
+        self.resize(1600, 1000)
         self.current_theme = "dark"
         self.last_viewmodel = None
         self.last_engine_result = None
@@ -611,15 +611,16 @@ class SipperWindow(QMainWindow):
         return page, layout
 
     def _build_summary_page(self):
-        _page, layout = self._new_grid_page("Resumo", [4, 4, 3], [0, 1, 1])
+        _page, layout = self._new_grid_page("Resumo", [4, 4, 3], [0, 1, 1, 1])
         self.summary_metrics = PanelCard("Pacotes Analisados")
         self.summary_protocols = PanelCard("Protocolos")
         self.summary_findings = PanelCard("Findings")
         self.summary_calls = PanelCard("Chamadas SIP Detectadas")
+        self.summary_rtp_streams = PanelCard("RTP Flows (Resumo)")
         self.summary_call_detail = PanelCard("Detalhes da Chamada")
         self.summary_recent_findings = PanelCard("Findings Recentes")
+        self.summary_traffic = PanelCard("Grafico de Trafego")
 
-        self.summary_metrics_text = self._make_text()
         self.summary_kpi_row = QWidget()
         self.summary_kpi_layout = QHBoxLayout(self.summary_kpi_row)
         self.summary_kpi_layout.setContentsMargins(0, 0, 0, 0)
@@ -630,44 +631,47 @@ class SipperWindow(QMainWindow):
         self.kpi_findings = KPIStat("Findings")
         for widget in (self.kpi_packets, self.kpi_protocols, self.kpi_calls, self.kpi_findings):
             self.summary_kpi_layout.addWidget(widget)
-        self.summary_protocols_text = self._make_text()
         self.summary_protocol_chart = DonutChart()
-        self.summary_findings_text = self._make_text()
         self.summary_findings_chart = BarChart()
         self.summary_calls_table = self._make_calls_table()
+        self.summary_rtp_table = self._make_rtp_table()
         self.summary_flow = CallFlowWidget()
         self.summary_sip_flow_button = QPushButton("Abrir SIP Flow")
         self.summary_sip_flow_button.setObjectName("secondaryButton")
         self.summary_sip_flow_button.clicked.connect(self._open_sip_flow_dialog)
         self.summary_detail_text = self._make_text()
         self.summary_findings_table = self._make_findings_table()
+        self.summary_traffic_chart = TrafficChart()
 
         self.summary_metrics.add_widget(self.summary_kpi_row)
-        self.summary_metrics.add_widget(self.summary_metrics_text)
-        self.summary_protocols.add_widget(self.summary_protocols_text)
         self.summary_protocols.add_widget(self.summary_protocol_chart)
-        self.summary_findings.add_widget(self.summary_findings_text)
         self.summary_findings.add_widget(self.summary_findings_chart)
         self.summary_calls.add_widget(self.summary_calls_table)
+        self.summary_rtp_streams.add_widget(self.summary_rtp_table)
         self.summary_call_detail.add_widget(self.summary_flow)
         self.summary_call_detail.add_widget(self.summary_sip_flow_button)
         self.summary_call_detail.add_widget(self.summary_detail_text)
         self.summary_recent_findings.add_widget(self.summary_findings_table)
+        self.summary_traffic.add_widget(self.summary_traffic_chart)
 
         layout.addWidget(self.summary_metrics, 0, 0)
         layout.addWidget(self.summary_protocols, 0, 1)
         layout.addWidget(self.summary_findings, 0, 2)
-        layout.addWidget(self.summary_calls, 1, 0, 1, 2)
-        layout.addWidget(self.summary_call_detail, 1, 2, 2, 1)
+        layout.addWidget(self.summary_calls, 1, 0)
+        layout.addWidget(self.summary_rtp_streams, 1, 1)
+        layout.addWidget(self.summary_call_detail, 1, 2, 3, 1)
         layout.addWidget(self.summary_recent_findings, 2, 0, 1, 2)
+        layout.addWidget(self.summary_traffic, 3, 0, 1, 2)
         self._register_page_cards(
             "Resumo",
             self.summary_metrics,
             self.summary_protocols,
             self.summary_findings,
             self.summary_calls,
+            self.summary_rtp_streams,
             self.summary_call_detail,
             self.summary_recent_findings,
+            self.summary_traffic,
         )
 
     def _build_sip_page(self):
@@ -702,12 +706,12 @@ class SipperWindow(QMainWindow):
         self.rtp_health = PanelCard("Saude de Midia")
         self.rtp_calls = PanelCard("Chamadas com Midia")
         self.rtp_detail = PanelCard("Detalhe RTP")
-        self.rtp_streams_text = self._make_text()
+        self.rtp_streams_table = self._make_rtp_table()
         self.rtp_health_text = self._make_text()
         self.rtp_calls_table = self._make_calls_table()
         self.rtp_flow = CallFlowWidget()
         self.rtp_detail_text = self._make_text()
-        self.rtp_streams.add_widget(self.rtp_streams_text)
+        self.rtp_streams.add_widget(self.rtp_streams_table)
         self.rtp_health.add_widget(self.rtp_health_text)
         self.rtp_calls.add_widget(self.rtp_calls_table)
         self.rtp_detail.add_widget(self.rtp_flow)
@@ -809,7 +813,9 @@ class SipperWindow(QMainWindow):
 
     def _make_calls_table(self):
         table = QTableWidget(0, 6)
-        table.setHorizontalHeaderLabels(["ID", "Origem", "Destino", "SIP", "RTP", "Severidade"])
+        table.setHorizontalHeaderLabels(
+            ["ID", "Origem", "Destino", "Inicio", "Duracao", "Status"]
+        )
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -818,8 +824,9 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.verticalHeader().setDefaultSectionSize(28)
         table.itemSelectionChanged.connect(self._on_call_selected)
         return table
 
@@ -834,9 +841,28 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.verticalHeader().setDefaultSectionSize(28)
         table.itemSelectionChanged.connect(self._on_finding_selected)
+        return table
+
+    def _make_rtp_table(self):
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(
+            ["Origem", "Destino", "SSRC", "Pacotes", "Loss", "Jitter (ms)"]
+        )
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setCornerButtonEnabled(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.verticalHeader().setDefaultSectionSize(28)
         return table
 
     def _choose_file(self):
@@ -880,8 +906,7 @@ class SipperWindow(QMainWindow):
         self.pages.setCurrentWidget(page)
         self.page_badge.setText(name)
         self._refresh_nav_state(name)
-        self._animate_widget(page, 0.0, 1.0, 220)
-        self._animate_page_cards(name)
+        self._animate_widget(page, 0.78, 1.0, 160)
         self._set_status(f"Visao atual: {name}")
 
     def _refresh_nav_state(self, current):
@@ -1057,57 +1082,32 @@ class SipperWindow(QMainWindow):
 
     def _render_summary_page(self):
         if self.last_viewmodel is None:
-            self.summary_metrics_text.setPlainText("Abra um PCAP para iniciar a analise.")
-            self.summary_protocols_text.setPlainText("Protocolos ainda nao analisados.")
-            self.summary_findings_text.setPlainText("Nenhum finding carregado.")
             self.summary_detail_text.setPlainText("Selecione ou carregue uma chamada para ver detalhes.")
             for widget in (self.kpi_packets, self.kpi_protocols, self.kpi_calls, self.kpi_findings):
                 widget.set_value(0)
             self._fill_calls_table(self.summary_calls_table, [])
+            self._fill_rtp_table(self.summary_rtp_table, [])
             self._fill_findings_table(self.summary_findings_table, [])
             self.summary_protocol_chart.set_series([])
             self.summary_findings_chart.set_items([])
+            self.summary_traffic_chart.set_data([], [])
             self.summary_flow.set_call(None)
             self.summary_sip_flow_button.setEnabled(False)
             return
 
         viewmodel = self.last_viewmodel
         protocols = viewmodel["protocols"]
-        protocol_names = ", ".join(item["name"] for item in protocols[:5]) or "-"
         self.kpi_packets.set_value(viewmodel["overview"]["packet_count"])
         self.kpi_protocols.set_value(viewmodel["overview"]["protocol_count"])
         self.kpi_calls.set_value(viewmodel["overview"]["call_count"])
         self.kpi_findings.set_value(viewmodel["overview"]["finding_count"])
-        self.summary_metrics_text.setPlainText(
-            "\n".join(
-                [
-                    "Panorama operacional da captura",
-                    "",
-                    f"Duracao: {self._format_duration(self.capture_duration)}",
-                    f"Protocolos observados: {viewmodel['overview']['protocol_count']}",
-                    f"Chamadas correlacionadas: {viewmodel['overview']['call_count']}",
-                    f"Protocolos dominantes: {protocol_names}",
-                ]
-            )
-        )
-        self.summary_protocols_text.setPlainText(
-            "\n".join([f"{item['name']}: {item['count']} ({item['share']:.1%})" for item in protocols])
-        )
-        self.summary_findings_text.setPlainText(
-            "\n".join(
-                [
-                    "Mapa de prioridade",
-                    "",
-                    f"High: {viewmodel['severity_counts']['high']}",
-                    f"Medium: {viewmodel['severity_counts']['medium']}",
-                    f"Low: {viewmodel['severity_counts']['low']}",
-                    "",
-                    f"Total: {viewmodel['overview']['finding_count']}",
-                ]
-            )
-        )
         self._fill_calls_table(self.summary_calls_table, viewmodel["calls"])
+        self._fill_rtp_table(
+            self.summary_rtp_table,
+            viewmodel["rtp_streams"],
+        )
         self._fill_findings_table(self.summary_findings_table, viewmodel["findings"])
+        self.summary_traffic_chart.set_data(self.last_traffic_series, self.last_traffic_labels)
         call = self._selected_call()
         self.summary_flow.set_call(call)
         self.summary_sip_flow_button.setEnabled(call is not None)
@@ -1184,20 +1184,16 @@ class SipperWindow(QMainWindow):
 
     def _render_rtp_page(self):
         if self.last_viewmodel is None:
-            self.rtp_streams_text.setPlainText("Abra um PCAP para analisar RTP.")
             self.rtp_health_text.setPlainText("Nenhum finding RTP carregado.")
             self.rtp_detail_text.setPlainText("Sem chamada selecionada.")
             self.rtp_flow.set_call(None)
+            self._fill_rtp_table(self.rtp_streams_table, [])
             self._fill_calls_table(self.rtp_calls_table, [])
             return
 
         calls = [call for call in self.last_viewmodel["calls"] if call["rtp_stream_count"] > 0 or call["media_state"] != "no_media"]
-        lines = []
-        for call in calls[:10]:
-            codecs = ", ".join(call["codec_guesses"]) or "-"
-            lines.append(f"{call['call_id']} | streams={call['rtp_stream_count']} | codecs={codecs}")
         rtp_findings = [finding for finding in self.last_viewmodel["findings"] if finding["type"].startswith("rtp_")]
-        self.rtp_streams_text.setPlainText("\n".join(lines) or "Nenhum stream RTP correlacionado.")
+        self._fill_rtp_table(self.rtp_streams_table, self.last_viewmodel["rtp_streams"])
         self.rtp_health_text.setPlainText("\n".join(self._finding_lines(rtp_findings, 12)) or "Nenhum finding RTP detectado.")
         self._fill_calls_table(self.rtp_calls_table, calls)
         call = self._selected_call()
@@ -1344,24 +1340,17 @@ class SipperWindow(QMainWindow):
                 call["call_id"],
                 call["source_ip"],
                 call["destination_ip"],
-                call["signaling_state"],
-                call["media_state"],
-                call["severity"],
+                self._format_packet_time(call["start_time"]),
+                self._format_duration(call["duration"]),
+                call["severity"].upper(),
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, call["call_id"])
-                if column == 3:
-                    item.setBackground(QColor(self._signal_color(call["signaling_state"], palette)))
-                    item.setForeground(QColor(palette["text"]))
-                if column == 4:
-                    item.setBackground(QColor(self._media_color(call["media_state"], palette)))
-                    item.setForeground(QColor(palette["text"]))
                 if column == 5:
                     item.setBackground(QColor(self._severity_color(call["severity"], palette)))
                     item.setForeground(QColor(palette["text"]))
                 table.setItem(row, column, item)
-        table.resizeColumnsToContents()
         self._restore_call_selection(table)
         table.blockSignals(False)
 
@@ -1379,9 +1368,22 @@ class SipperWindow(QMainWindow):
                     item.setBackground(QColor(self._severity_color(finding["severity"], palette)))
                     item.setForeground(QColor(palette["text"]))
                 table.setItem(row, column, item)
-        table.resizeColumnsToContents()
         self._restore_finding_selection(table)
         table.blockSignals(False)
+
+    def _fill_rtp_table(self, table, streams):
+        table.setRowCount(len(streams))
+        for row, stream in enumerate(streams):
+            values = [
+                stream["source"],
+                stream["destination"],
+                f"0x{stream['ssrc']:08X}",
+                str(stream["packet_count"]),
+                f"{stream['loss_percent']:.2f}% ({stream['lost_packets']})",
+                f"{stream['average_jitter'] * 1000:.1f}",
+            ]
+            for column, value in enumerate(values):
+                table.setItem(row, column, QTableWidgetItem(value))
 
     def _restore_call_selection(self, table):
         if self.selected_call_id is None:
@@ -1545,6 +1547,11 @@ class SipperWindow(QMainWindow):
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
+    def _format_packet_time(self, timestamp):
+        if timestamp is None:
+            return "-"
+        return f"{timestamp:.3f}"
+
     def _selected_call(self):
         if self.selected_call_id and self.selected_call_id in self.call_index:
             return self.call_index[self.selected_call_id]
@@ -1569,6 +1576,7 @@ class SipperWindow(QMainWindow):
             return
         palette = THEMES[self.current_theme]
         evidence = call["key_evidence"] or ["Sem evidencias resumidas."]
+        rtp_metrics = call["rtp_metrics"]
         evidence_html = "".join(
             f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>" for item in evidence
         )
@@ -1585,9 +1593,16 @@ class SipperWindow(QMainWindow):
                 </div>
                 <div style="margin-bottom:8px;"><b>Origem:</b> {self._escape_html(call['source_ip'])}</div>
                 <div style="margin-bottom:8px;"><b>Destino:</b> {self._escape_html(call['destination_ip'])}</div>
+                <div style="margin-bottom:8px;"><b>Midia negociada:</b> {self._escape_html(call['media_direction'])}</div>
                 <div style="margin-bottom:8px;"><b>Issue principal:</b> {self._escape_html(call['primary_issue'] or '-')}</div>
                 <div style="margin-bottom:8px;"><b>Codecs:</b> {self._escape_html(', '.join(call['codec_guesses']) or '-')}</div>
-                <div style="margin-bottom:14px;"><b>Streams RTP:</b> {call['rtp_stream_count']}</div>
+                <div style="margin-bottom:8px;"><b>Duracao:</b> {self._format_duration(call['duration'])}</div>
+                <div style="margin-bottom:8px;"><b>Streams RTP:</b> {call['rtp_stream_count']}</div>
+                <div style="margin-bottom:8px;"><b>Pacotes RTP:</b> {rtp_metrics['packet_count']}</div>
+                <div style="margin-bottom:8px;"><b>Packet loss:</b> {rtp_metrics['loss_percent']:.2f}% ({rtp_metrics['lost_packets']})</div>
+                <div style="margin-bottom:8px;"><b>Jitter medio/maximo:</b> {rtp_metrics['average_jitter'] * 1000:.1f} / {rtp_metrics['max_jitter'] * 1000:.1f} ms</div>
+                <div style="margin-bottom:8px;"><b>Out-of-order:</b> {rtp_metrics['out_of_order_packets']}</div>
+                <div style="margin-bottom:14px;"><b>SSRC:</b> {self._escape_html(', '.join(str(ssrc) for ssrc in rtp_metrics['ssrcs']) or '-')}</div>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Evidencias</div>
                 <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{evidence_html}</ul>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Acao recomendada</div>
@@ -1718,40 +1733,6 @@ class SipperWindow(QMainWindow):
         animation.finished.connect(_cleanup)
         animation.start()
 
-    def _animate_page_cards(self, page_name):
-        for index, card in enumerate(self.page_cards.get(page_name, [])):
-            effect = card.graphicsEffect()
-            if not isinstance(effect, QGraphicsOpacityEffect):
-                effect = QGraphicsOpacityEffect(card)
-                card.setGraphicsEffect(effect)
-            effect.setOpacity(0.0)
-
-            opacity_animation = QPropertyAnimation(effect, b"opacity", card)
-            opacity_animation.setDuration(240 + (index * 30))
-            opacity_animation.setStartValue(0.0)
-            opacity_animation.setEndValue(1.0)
-            opacity_animation.setEasingCurve(QEasingCurve.OutCubic)
-
-            start_pos = card.pos() + QPoint(0, 16)
-            end_pos = card.pos()
-            move_animation = QPropertyAnimation(card, b"pos", card)
-            move_animation.setDuration(240 + (index * 30))
-            move_animation.setStartValue(start_pos)
-            move_animation.setEndValue(end_pos)
-            move_animation.setEasingCurve(QEasingCurve.OutCubic)
-
-            self.active_animations.extend([opacity_animation, move_animation])
-
-            def _cleanup(animation=opacity_animation, move=move_animation):
-                if animation in self.active_animations:
-                    self.active_animations.remove(animation)
-                if move in self.active_animations:
-                    self.active_animations.remove(move)
-
-            opacity_animation.finished.connect(_cleanup)
-            opacity_animation.start()
-            move_animation.start()
-
     def _page_icon(self, page):
         icon_map = {
             "Resumo": QStyle.SP_ComputerIcon,
@@ -1789,6 +1770,7 @@ class SipperWindow(QMainWindow):
             "degraded_media": palette["warning"],
             "one_way_media": palette["danger"],
             "no_media": palette["muted"],
+            "inactive_media": palette["muted"],
         }.get(state, palette["accent"])
 
     def _chip_html(self, label, color, palette):

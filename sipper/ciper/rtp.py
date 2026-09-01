@@ -45,6 +45,7 @@ class RTPStream:
     timestamp_anomalies: int = 0
     interruptions: int = 0
     max_jitter: float = 0.0
+    jitter_samples: list[float] = field(default_factory=list)
     payload_types: set[int] = field(default_factory=set)
 
     @property
@@ -65,6 +66,12 @@ class RTPStream:
 
         return guesses
 
+    @property
+    def average_jitter(self):
+        if not self.jitter_samples:
+            return 0.0
+        return sum(self.jitter_samples) / len(self.jitter_samples)
+
 
 def parse_rtp_packet(packet):
     if IP not in packet or UDP not in packet or Raw not in packet:
@@ -80,7 +87,26 @@ def parse_rtp_packet(packet):
         return None
 
     payload_type = payload[1] & 0x7F
-    if payload_type >= 64:
+    csrc_count = payload[0] & 0x0F
+    has_extension = bool(payload[0] & 0x10)
+    has_padding = bool(payload[0] & 0x20)
+    header_length = 12 + (csrc_count * 4)
+
+    if len(payload) < header_length:
+        return None
+
+    if has_extension:
+        if len(payload) < header_length + 4:
+            return None
+        extension_length = (payload[header_length + 2] << 8) | payload[header_length + 3]
+        header_length += 4 + (extension_length * 4)
+
+        if len(payload) < header_length:
+            return None
+
+    padding_length = payload[-1] if has_padding else 0
+
+    if padding_length > len(payload) - header_length:
         return None
 
     sequence = (payload[2] << 8) | payload[3]
@@ -107,7 +133,7 @@ def parse_rtp_packet(packet):
         ssrc=ssrc,
         payload_type=payload_type,
         marker=(payload[1] >> 7) & 0x01,
-        payload_length=len(payload) - 12,
+        payload_length=len(payload) - header_length - padding_length,
         packet_time=float(packet.time),
     )
 
@@ -161,14 +187,14 @@ def _finalize_stream(stream):
             previous_packet = packet
             continue
 
-        sequence_delta = packet.sequence - previous_packet.sequence
-        if sequence_delta > 1:
+        sequence_delta = (packet.sequence - previous_packet.sequence) & 0xFFFF
+        if 1 < sequence_delta <= 0x7FFF:
             stream.lost_packets += sequence_delta - 1
-        elif sequence_delta <= 0:
+        elif sequence_delta == 0 or sequence_delta > 0x7FFF:
             stream.out_of_order_packets += 1
 
-        timestamp_delta = packet.timestamp - previous_packet.timestamp
-        if timestamp_delta <= 0:
+        timestamp_delta = (packet.timestamp - previous_packet.timestamp) & 0xFFFFFFFF
+        if timestamp_delta == 0 or timestamp_delta > 0x7FFFFFFF:
             stream.timestamp_anomalies += 1
 
         arrival_delta = packet.packet_time - previous_packet.packet_time
@@ -177,6 +203,7 @@ def _finalize_stream(stream):
 
         if previous_delta is not None:
             jitter = abs(arrival_delta - previous_delta)
+            stream.jitter_samples.append(jitter)
             if jitter > stream.max_jitter:
                 stream.max_jitter = jitter
 

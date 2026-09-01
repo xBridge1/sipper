@@ -51,6 +51,57 @@ def test_parse_rtp_packet():
     assert parsed.payload_type == 0
 
 
+def test_parse_rtp_packet_accepts_dynamic_payload_type():
+    packet = make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 100, 160, 1234, payload_type=111)
+
+    parsed = parse_rtp_packet(packet)
+
+    assert parsed is not None
+    assert parsed.payload_type == 111
+
+
+def test_parse_rtp_packet_handles_csrc_extension_and_padding():
+    header = bytes(
+        [
+            0xB1,
+            0x80,
+            0,
+            100,
+            0,
+            0,
+            0,
+            160,
+            0,
+            0,
+            4,
+            210,
+        ]
+    )
+    csrc = b"\x00\x00\x00\x01"
+    extension = b"\xBE\xDE\x00\x01\x00\x00\x00\x00"
+    payload = b"DATA"
+    padding = b"\x04\x04\x04\x04"
+    packet = IP(src="10.0.0.1", dst="10.0.0.2") / UDP(sport=4000, dport=4002) / (header + csrc + extension + payload + padding)
+
+    parsed = parse_rtp_packet(packet)
+
+    assert parsed is not None
+    assert parsed.payload_length == 4
+
+
+def test_build_rtp_streams_handles_sequence_and_timestamp_rollover():
+    packets = [
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 65535, 0xFFFFFF00, 1234),
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 0, 160, 1234),
+    ]
+
+    stream = next(iter(build_rtp_streams(packets).values()))
+
+    assert stream.lost_packets == 0
+    assert stream.out_of_order_packets == 0
+    assert stream.timestamp_anomalies == 0
+
+
 def test_build_rtp_streams_groups_by_ssrc():
     packets = [
         make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 100, 160, 1234),

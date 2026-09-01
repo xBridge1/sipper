@@ -1,4 +1,4 @@
-from scapy.layers.inet import IP, UDP
+from scapy.layers.inet import IP, TCP, UDP
 
 from ciper.engine import analyze_pcap
 from ciper.sip import build_sip_flows, parse_sip_message
@@ -22,6 +22,51 @@ def test_parse_sip_invite_message():
     assert message.is_request is True
     assert message.method == "INVITE"
     assert message.call_id == "call-123"
+
+
+def test_parse_sip_message_extracts_sdp_audio_media_and_codec():
+    packet = (
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: sdp-call\r\n"
+            b"Content-Type: application/sdp\r\n\r\n"
+            b"v=0\r\n"
+            b"c=IN IP4 192.168.1.10\r\n"
+            b"m=audio 4000 RTP/AVP 0 8 101\r\n"
+            b"a=rtpmap:0 PCMU/8000\r\n"
+            b"a=rtpmap:8 PCMA/8000\r\n"
+            b"a=rtpmap:101 telephone-event/8000\r\n"
+        )
+    )
+
+    message = parse_sip_message(packet)
+
+    assert message is not None
+    assert len(message.sdp_media) == 1
+    assert message.sdp_media[0].port == 4000
+    assert message.sdp_media[0].connection_address == "192.168.1.10"
+    assert message.sdp_media[0].codecs == {0: "PCMU", 8: "PCMA", 101: "telephone-event"}
+
+
+def test_parse_sip_message_extracts_sdp_media_direction():
+    packet = (
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: direction-call\r\n\r\n"
+            b"v=0\r\n"
+            b"a=sendonly\r\n"
+            b"m=audio 4000 RTP/AVP 0\r\n"
+        )
+    )
+
+    message = parse_sip_message(packet)
+
+    assert message is not None
+    assert message.sdp_media[0].direction == "sendonly"
 
 
 def test_parse_sip_response_message():
@@ -75,6 +120,27 @@ def test_build_sip_flows_groups_by_call_id():
     assert len(flow.messages) == 2
     assert flow.invites == 1
     assert flow.responses == 1
+
+
+def test_build_sip_flows_reassembles_tcp_segments_using_content_length():
+    sdp = b"v=0\r\nm=audio 4000 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\n"
+    message = (
+        b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+        b"Call-ID: tcp-segmented\r\n"
+        + f"Content-Length: {len(sdp)}\r\n\r\n".encode()
+        + sdp
+    )
+    split_at = len(message) - 16
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20") / TCP(sport=5060, dport=5060, seq=100) / message[:split_at],
+        IP(src="192.168.1.10", dst="192.168.1.20") / TCP(sport=5060, dport=5060, seq=100 + split_at) / message[split_at:],
+    ]
+
+    flows = build_sip_flows(packets)
+
+    assert len(flows) == 1
+    assert flows["tcp-segmented"].invites == 1
+    assert flows["tcp-segmented"].messages[0].sdp_media[0].codecs == {8: "PCMA"}
 
 
 def test_build_sip_flows_tracks_ack_and_error_responses():

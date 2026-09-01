@@ -143,28 +143,32 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                 )
                 break
 
-    if sip_flows and not rtp_streams:
-        for flow in sip_flows.values():
-            if flow.success_responses > 0 and flow.acknowledgements > 0:
-                correlated.append(
-                    Finding(
-                        type="sip_call_established_without_rtp",
-                        severity="high",
-                        confidence=0.90,
-                        source_ip=flow.source_ip,
-                        destination_ip=flow.destination_ip,
-                        description="SIP call signaling completed, but no RTP media stream was observed.",
-                        evidence=[
-                            f"Call-ID: {flow.call_id}",
-                            f"200 OK responses: {flow.success_responses}",
-                            f"ACKs: {flow.acknowledgements}",
-                            "RTP streams observed: 0",
-                        ],
-                        recommendation=(
-                            "Check SDP/media negotiation, NAT traversal, RTP port reachability, or endpoints failing to start media."
-                        ),
-                    )
+    for flow in sip_flows.values():
+        if (
+            flow.success_responses > 0
+            and flow.acknowledgements > 0
+            and _expects_media(flow)
+            and not _get_related_rtp_streams(flow, rtp_streams)
+        ):
+            correlated.append(
+                Finding(
+                    type="sip_call_established_without_rtp",
+                    severity="high",
+                    confidence=0.90,
+                    source_ip=flow.source_ip,
+                    destination_ip=flow.destination_ip,
+                    description="SIP call signaling completed, but no RTP media stream was observed.",
+                    evidence=[
+                        f"Call-ID: {flow.call_id}",
+                        f"200 OK responses: {flow.success_responses}",
+                        f"ACKs: {flow.acknowledgements}",
+                        "RTP streams observed: 0",
+                    ],
+                    recommendation=(
+                        "Check SDP/media negotiation, NAT traversal, RTP port reachability, or endpoints failing to start media."
+                    ),
                 )
+            )
 
     if rtp_streams and not sip_flows:
         for stream in rtp_streams.values():
@@ -193,7 +197,11 @@ def correlate_findings(findings, sip_flows, rtp_streams):
     ]
 
     for flow in sip_flows.values():
-        if flow.success_responses <= 0 or flow.acknowledgements <= 0:
+        if (
+            flow.success_responses <= 0
+            or flow.acknowledgements <= 0
+            or not _expects_bidirectional_media(flow)
+        ):
             continue
 
         for finding in one_way_findings:
@@ -292,15 +300,9 @@ def prioritize_findings(findings):
 def build_call_summaries(sip_flows, rtp_streams, findings):
     summaries = []
 
-    rtp_by_pair = {}
-
-    for stream in rtp_streams.values():
-        key = tuple(sorted([stream.source_ip, stream.destination_ip]))
-        rtp_by_pair.setdefault(key, []).append(stream)
-
     for flow in sip_flows.values():
-        pair_key = tuple(sorted([flow.source_ip, flow.destination_ip]))
-        related_streams = rtp_by_pair.get(pair_key, [])
+        related_streams = _get_related_rtp_streams(flow, rtp_streams)
+        sdp_media = _get_sdp_media(flow)
         related_findings = [
             finding
             for finding in findings
@@ -317,18 +319,130 @@ def build_call_summaries(sip_flows, rtp_streams, findings):
                 "destination_ip": flow.destination_ip,
                 "signaling_state": _get_signaling_state(flow),
                 "media_state": _get_media_state(flow, related_streams, related_findings),
+                "media_direction": _get_media_negotiation_state(flow),
                 "has_rtp": bool(related_streams),
                 "rtp_stream_count": len(related_streams),
+                "start_time": _get_call_start_time(flow, related_streams),
+                "end_time": _get_call_end_time(flow, related_streams),
+                "duration": _get_call_duration(flow, related_streams),
+                "rtp_metrics": _get_rtp_metrics(related_streams),
                 "finding_types": [finding.type for finding in related_findings],
                 "severity": _get_summary_severity(related_findings),
                 "primary_issue": _get_primary_issue(related_findings),
-                "codec_guesses": _get_codec_guesses(related_streams),
+                "codec_guesses": _get_codec_guesses(related_streams, sdp_media),
                 "key_evidence": _get_key_evidence(flow, related_findings, related_streams),
                 "recommended_action": _get_recommended_action(related_findings),
             }
         )
 
     return summaries
+
+
+def _get_related_rtp_streams(flow, rtp_streams):
+    pair_key = tuple(sorted([flow.source_ip, flow.destination_ip]))
+    pair_streams = [
+        stream
+        for stream in rtp_streams.values()
+        if tuple(sorted([stream.source_ip, stream.destination_ip])) == pair_key
+    ]
+    audio_media = [media for media in _get_sdp_media(flow) if media.media_type == "audio"]
+
+    if not audio_media:
+        return pair_streams
+
+    media_ports = {
+        media.port
+        for media in audio_media
+        if media.port > 0 and media.direction != "inactive"
+    }
+
+    if not media_ports:
+        return []
+
+    return [
+        stream
+        for stream in pair_streams
+        if stream.source_port in media_ports or stream.destination_port in media_ports
+    ]
+
+
+def _get_sdp_media(flow):
+    return [media for message in flow.messages for media in message.sdp_media]
+
+
+def _get_media_negotiation_state(flow):
+    audio_media = [media for media in _get_sdp_media(flow) if media.media_type == "audio"]
+
+    if not audio_media:
+        return "unknown"
+
+    if all(media.port == 0 or media.direction == "inactive" for media in audio_media):
+        return "inactive"
+
+    if any(media.direction in {"sendonly", "recvonly"} for media in audio_media):
+        return "unidirectional"
+
+    return "bidirectional"
+
+
+def _expects_media(flow):
+    return _get_media_negotiation_state(flow) != "inactive"
+
+
+def _expects_bidirectional_media(flow):
+    return _get_media_negotiation_state(flow) in {"unknown", "bidirectional"}
+
+
+def _get_call_start_time(flow, related_streams):
+    timestamps = [message.packet_time for message in flow.messages]
+    timestamps.extend(
+        stream.first_timestamp
+        for stream in related_streams
+        if stream.first_timestamp is not None
+    )
+    return min(timestamps) if timestamps else None
+
+
+def _get_call_end_time(flow, related_streams):
+    timestamps = [message.packet_time for message in flow.messages]
+    timestamps.extend(
+        stream.last_timestamp
+        for stream in related_streams
+        if stream.last_timestamp is not None
+    )
+    return max(timestamps) if timestamps else None
+
+
+def _get_call_duration(flow, related_streams):
+    start_time = _get_call_start_time(flow, related_streams)
+    end_time = _get_call_end_time(flow, related_streams)
+
+    if start_time is None or end_time is None:
+        return 0.0
+
+    return end_time - start_time
+
+
+def _get_rtp_metrics(related_streams):
+    packet_count = sum(stream.packet_count for stream in related_streams)
+    lost_packets = sum(stream.lost_packets for stream in related_streams)
+    expected_packets = packet_count + lost_packets
+    jitter_samples = [
+        sample
+        for stream in related_streams
+        for sample in stream.jitter_samples
+    ]
+
+    return {
+        "packet_count": packet_count,
+        "lost_packets": lost_packets,
+        "loss_percent": (lost_packets / expected_packets * 100) if expected_packets else 0.0,
+        "out_of_order_packets": sum(stream.out_of_order_packets for stream in related_streams),
+        "interruptions": sum(stream.interruptions for stream in related_streams),
+        "average_jitter": (sum(jitter_samples) / len(jitter_samples)) if jitter_samples else 0.0,
+        "max_jitter": max((stream.max_jitter for stream in related_streams), default=0.0),
+        "ssrcs": sorted({stream.ssrc for stream in related_streams}),
+    }
 
 
 def _get_signaling_state(flow):
@@ -355,10 +469,15 @@ def _get_signaling_state(flow):
 def _get_media_state(flow, related_streams, related_findings):
     finding_types = {finding.type for finding in related_findings}
 
+    if _get_media_negotiation_state(flow) == "inactive":
+        return "inactive_media"
+
     if not related_streams:
         return "no_media"
 
-    if "sip_call_one_way_audio" in finding_types or "rtp_one_way_audio" in finding_types:
+    if _expects_bidirectional_media(flow) and (
+        "sip_call_one_way_audio" in finding_types or "rtp_one_way_audio" in finding_types
+    ):
         return "one_way_media"
 
     if any(
@@ -427,11 +546,22 @@ def _get_primary_issue(related_findings):
     return best_finding.type if best_finding is not None else None
 
 
-def _get_codec_guesses(related_streams):
+def _get_codec_guesses(related_streams, sdp_media):
     codec_guesses = []
+    codecs_by_payload_type = {
+        payload_type: codec
+        for media in sdp_media
+        for payload_type, codec in media.codecs.items()
+    }
 
     for stream in related_streams:
-        for codec in stream.codec_guesses:
+        codecs = [
+            codecs_by_payload_type.get(payload_type)
+            for payload_type in sorted(stream.payload_types)
+        ]
+        codecs = [codec for codec in codecs if codec] or stream.codec_guesses
+
+        for codec in codecs:
             if codec not in codec_guesses:
                 codec_guesses.append(codec)
 

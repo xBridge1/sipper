@@ -2,6 +2,9 @@ from collections import Counter
 
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 
+from ciper.rtp import parse_rtp_packet
+from ciper.sip import parse_sip_message
+
 
 def analyze_packets(packets):
     protocols = Counter()
@@ -19,7 +22,13 @@ def analyze_packets(packets):
         source_ips[source_ip] += 1
         destination_ips[destination_ip] += 1
 
-        if TCP in packet:
+        if parse_sip_message(packet) is not None:
+            protocols["SIP"] += 1
+
+        elif parse_rtp_packet(packet) is not None:
+            protocols["RTP"] += 1
+
+        elif TCP in packet:
             protocols["TCP"] += 1
 
             source_port = packet[TCP].sport
