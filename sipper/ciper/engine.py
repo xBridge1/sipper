@@ -2,6 +2,9 @@ from ciper.flows import build_tcp_flows, build_icmp_flows
 from ciper.rtp import build_rtp_streams
 from ciper.sip import build_sip_flows
 from ciper.udp_flows import build_udp_flows
+from ciper.pcap_reader import iter_pcap
+from ciper.settings import AnalysisSettings
+from ciper.analysis_control import raise_if_cancelled
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
 from ciper.findings import Finding
 from ciper.detectors.icmp import (
@@ -41,12 +44,25 @@ from ciper.detectors.rtp import (
 )
 
 
-def analyze_pcap(packets):
-    flows = build_tcp_flows(packets)
-    udp_flows = build_udp_flows(packets)
-    icmp_flows = build_icmp_flows(packets)
-    sip_flows = build_sip_flows(packets)
-    rtp_streams = build_rtp_streams(packets)
+def analyze_pcap(packets, settings=None, cancel_event=None):
+    packet_list = list(packets)
+    return _analyze_pcap_sources(lambda: _iter_with_cancellation(iter(packet_list), cancel_event), settings, cancel_event)
+
+
+def analyze_pcap_file(file_path, settings=None, cancel_event=None):
+    return _analyze_pcap_sources(
+        lambda: _iter_with_cancellation(iter_pcap(file_path), cancel_event), settings, cancel_event
+    )
+
+
+def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None):
+    settings = settings or AnalysisSettings()
+    raise_if_cancelled(cancel_event)
+    flows = build_tcp_flows(packet_source())
+    udp_flows = build_udp_flows(packet_source())
+    icmp_flows = build_icmp_flows(packet_source())
+    sip_flows = build_sip_flows(packet_source())
+    rtp_streams = build_rtp_streams(packet_source())
 
     findings = []
 
@@ -67,9 +83,9 @@ def analyze_pcap(packets):
     findings.extend(detect_sip_large_headers(sip_flows))
     findings.extend(detect_sip_ok_without_ack(sip_flows))
     findings.extend(detect_sip_signaling_fragmentation(sip_flows))
-    findings.extend(detect_rtp_packet_loss(rtp_streams))
+    findings.extend(detect_rtp_packet_loss(rtp_streams, settings.rtp_loss_high_threshold))
     findings.extend(detect_rtp_out_of_order(rtp_streams))
-    findings.extend(detect_rtp_high_jitter(rtp_streams))
+    findings.extend(detect_rtp_high_jitter(rtp_streams, settings.rtp_high_jitter_threshold))
     findings.extend(detect_rtp_timestamp_anomaly(rtp_streams))
     findings.extend(detect_rtp_stream_interruption(rtp_streams))
     findings.extend(detect_rtp_payload_type_change(rtp_streams))
@@ -94,6 +110,12 @@ def analyze_pcap(packets):
         "findings": findings,
         "call_summaries": call_summaries,
     }
+
+
+def _iter_with_cancellation(packets, cancel_event):
+    for packet in packets:
+        raise_if_cancelled(cancel_event)
+        yield packet
 
 
 def correlate_findings(findings, sip_flows, rtp_streams):
@@ -326,6 +348,11 @@ def build_call_summaries(sip_flows, rtp_streams, findings):
                 "end_time": _get_call_end_time(flow, related_streams),
                 "duration": _get_call_duration(flow, related_streams),
                 "rtp_metrics": _get_rtp_metrics(related_streams),
+                "media_quality": _get_media_quality(related_streams),
+                "signaling_timeline": _get_signaling_timeline(flow),
+                "signaling_timings": _get_signaling_timings(flow),
+                "signaling_timeline": _get_signaling_timeline(flow),
+                "signaling_timings": _get_signaling_timings(flow),
                 "finding_types": [finding.type for finding in related_findings],
                 "severity": _get_summary_severity(related_findings),
                 "primary_issue": _get_primary_issue(related_findings),
@@ -339,13 +366,18 @@ def build_call_summaries(sip_flows, rtp_streams, findings):
 
 
 def _get_related_rtp_streams(flow, rtp_streams):
-    pair_key = tuple(sorted([flow.source_ip, flow.destination_ip]))
+    audio_media = [media for media in _get_sdp_media(flow) if media.media_type == "audio"]
+    endpoint_ips = {flow.source_ip, flow.destination_ip}
+    endpoint_ips.update(
+        media.connection_address
+        for media in audio_media
+        if media.connection_address
+    )
     pair_streams = [
         stream
         for stream in rtp_streams.values()
-        if tuple(sorted([stream.source_ip, stream.destination_ip])) == pair_key
+        if stream.source_ip in endpoint_ips and stream.destination_ip in endpoint_ips
     ]
-    audio_media = [media for media in _get_sdp_media(flow) if media.media_type == "audio"]
 
     if not audio_media:
         return pair_streams
@@ -367,7 +399,12 @@ def _get_related_rtp_streams(flow, rtp_streams):
 
 
 def _get_sdp_media(flow):
-    return [media for message in flow.messages for media in message.sdp_media]
+    messages_with_sdp = [message for message in flow.messages if message.sdp_media]
+
+    if flow.invites > 1:
+        messages_with_sdp = messages_with_sdp[-2:]
+
+    return [media for message in messages_with_sdp for media in message.sdp_media]
 
 
 def _get_media_negotiation_state(flow):
@@ -433,6 +470,36 @@ def _get_rtp_metrics(related_streams):
         for sample in stream.jitter_samples
     ]
 
+    directions = {}
+
+    for stream in related_streams:
+        key = f"{stream.source_ip}:{stream.source_port}->{stream.destination_ip}:{stream.destination_port}"
+        metric = directions.setdefault(
+            key,
+            {
+                "packet_count": 0,
+                "lost_packets": 0,
+                "out_of_order_packets": 0,
+                "interruptions": 0,
+                "max_jitter": 0.0,
+                "duration": 0.0,
+                "duration": 0.0,
+            },
+        )
+        metric["packet_count"] += stream.packet_count
+        metric["lost_packets"] += stream.lost_packets
+        metric["out_of_order_packets"] += stream.out_of_order_packets
+        metric["interruptions"] += stream.interruptions
+        metric["max_jitter"] = max(metric["max_jitter"], stream.max_jitter)
+        metric["duration"] = max(metric["duration"], stream.duration)
+        metric["duration"] = max(metric["duration"], stream.duration)
+
+    for metric in directions.values():
+        expected = metric["packet_count"] + metric["lost_packets"]
+        metric["loss_percent"] = (metric["lost_packets"] / expected * 100) if expected else 0.0
+        metric["packet_rate"] = metric["packet_count"] / metric["duration"] if metric["duration"] else 0.0
+        metric["packet_rate"] = metric["packet_count"] / metric["duration"] if metric["duration"] else 0.0
+
     return {
         "packet_count": packet_count,
         "lost_packets": lost_packets,
@@ -442,7 +509,153 @@ def _get_rtp_metrics(related_streams):
         "average_jitter": (sum(jitter_samples) / len(jitter_samples)) if jitter_samples else 0.0,
         "max_jitter": max((stream.max_jitter for stream in related_streams), default=0.0),
         "ssrcs": sorted({stream.ssrc for stream in related_streams}),
+        "directions": directions,
     }
+
+
+def _get_signaling_timeline(flow):
+    if not flow.messages:
+        return []
+
+    start_time = min(message.packet_time for message in flow.messages)
+    timeline = []
+
+    for message in flow.messages:
+        if message.is_request:
+            event = message.method or "REQUEST"
+        else:
+            event = f"{message.status_code} {message.reason_phrase or ''}".strip()
+
+        timeline.append(
+            {
+                "event": event,
+                "timestamp": message.packet_time,
+                "offset": max(0.0, message.packet_time - start_time),
+                "source_ip": message.source_ip,
+                "destination_ip": message.destination_ip,
+            }
+        )
+
+    return timeline
+
+
+def _get_signaling_timings(flow):
+    event_times = {
+        "invite": None,
+        "trying": None,
+        "ringing": None,
+        "ok": None,
+        "ack": None,
+    }
+
+    for message in flow.messages:
+        if message.is_request and message.method == "INVITE" and event_times["invite"] is None:
+            event_times["invite"] = message.packet_time
+        elif message.is_request and message.method == "ACK" and event_times["ack"] is None:
+            event_times["ack"] = message.packet_time
+        elif not message.is_request and message.status_code == 100 and event_times["trying"] is None:
+            event_times["trying"] = message.packet_time
+        elif not message.is_request and message.status_code == 180 and event_times["ringing"] is None:
+            event_times["ringing"] = message.packet_time
+        elif not message.is_request and 200 <= message.status_code < 300 and event_times["ok"] is None:
+            event_times["ok"] = message.packet_time
+
+    invite_time = event_times["invite"]
+    return {
+        "invite_to_trying": _elapsed_seconds(invite_time, event_times["trying"]),
+        "invite_to_ringing": _elapsed_seconds(invite_time, event_times["ringing"]),
+        "invite_to_ok": _elapsed_seconds(invite_time, event_times["ok"]),
+        "ok_to_ack": _elapsed_seconds(event_times["ok"], event_times["ack"]),
+        "invite_to_ack": _elapsed_seconds(invite_time, event_times["ack"]),
+    }
+
+
+def _elapsed_seconds(start_time, end_time):
+    if start_time is None or end_time is None:
+        return None
+    return max(0.0, end_time - start_time)
+
+
+def _get_signaling_timeline(flow):
+    if not flow.messages:
+        return []
+
+    start_time = min(message.packet_time for message in flow.messages)
+    timeline = []
+
+    for message in flow.messages:
+        if message.is_request:
+            event = message.method or "REQUEST"
+        else:
+            event = f"{message.status_code} {message.reason_phrase or ''}".strip()
+
+        timeline.append(
+            {
+                "event": event,
+                "timestamp": message.packet_time,
+                "offset": max(0.0, message.packet_time - start_time),
+                "source_ip": message.source_ip,
+                "destination_ip": message.destination_ip,
+            }
+        )
+
+    return timeline
+
+
+def _get_signaling_timings(flow):
+    event_times = {
+        "invite": None,
+        "trying": None,
+        "ringing": None,
+        "ok": None,
+        "ack": None,
+    }
+
+    for message in flow.messages:
+        if message.is_request and message.method == "INVITE" and event_times["invite"] is None:
+            event_times["invite"] = message.packet_time
+        elif message.is_request and message.method == "ACK" and event_times["ack"] is None:
+            event_times["ack"] = message.packet_time
+        elif not message.is_request and message.status_code == 100 and event_times["trying"] is None:
+            event_times["trying"] = message.packet_time
+        elif not message.is_request and message.status_code == 180 and event_times["ringing"] is None:
+            event_times["ringing"] = message.packet_time
+        elif not message.is_request and 200 <= message.status_code < 300 and event_times["ok"] is None:
+            event_times["ok"] = message.packet_time
+
+    invite_time = event_times["invite"]
+    return {
+        "invite_to_trying": _elapsed_seconds(invite_time, event_times["trying"]),
+        "invite_to_ringing": _elapsed_seconds(invite_time, event_times["ringing"]),
+        "invite_to_ok": _elapsed_seconds(invite_time, event_times["ok"]),
+        "ok_to_ack": _elapsed_seconds(event_times["ok"], event_times["ack"]),
+        "invite_to_ack": _elapsed_seconds(invite_time, event_times["ack"]),
+    }
+
+
+def _elapsed_seconds(start_time, end_time):
+    if start_time is None or end_time is None:
+        return None
+    return max(0.0, end_time - start_time)
+
+
+def _get_media_quality(related_streams):
+    metrics = _get_rtp_metrics(related_streams)
+
+    if not metrics["packet_count"]:
+        return "unknown"
+
+    if (
+        metrics["loss_percent"] >= 5
+        or metrics["max_jitter"] >= 0.1
+        or metrics["interruptions"] > 0
+    ):
+        return "poor"
+
+    if metrics["loss_percent"] >= 1 or metrics["max_jitter"] >= 0.04:
+        return "degraded"
+
+    return "good"
 
 
 def _get_signaling_state(flow):

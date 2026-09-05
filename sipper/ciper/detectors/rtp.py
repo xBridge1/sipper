@@ -1,7 +1,7 @@
 from ciper.findings import Finding
 
 
-def detect_rtp_packet_loss(streams):
+def detect_rtp_packet_loss(streams, high_loss_threshold=2):
     findings = []
     for stream in streams.values():
         if stream.lost_packets == 0:
@@ -9,7 +9,7 @@ def detect_rtp_packet_loss(streams):
         findings.append(
             Finding(
                 type="rtp_packet_loss",
-                severity="high" if stream.lost_packets >= 2 else "medium",
+                severity="high" if stream.lost_packets >= high_loss_threshold else "medium",
                 confidence=0.95,
                 source_ip=stream.source_ip,
                 destination_ip=stream.destination_ip,
@@ -48,10 +48,10 @@ def detect_rtp_out_of_order(streams):
     return findings
 
 
-def detect_rtp_high_jitter(streams):
+def detect_rtp_high_jitter(streams, threshold=0.04):
     findings = []
     for stream in streams.values():
-        if stream.max_jitter <= 0.04:
+        if stream.max_jitter <= threshold:
             continue
         findings.append(
             Finding(

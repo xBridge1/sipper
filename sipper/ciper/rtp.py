@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from scapy.layers.inet import IP, UDP
+from scapy.layers.inet6 import IPv6
 from scapy.packet import Raw
 
 
@@ -74,7 +75,7 @@ class RTPStream:
 
 
 def parse_rtp_packet(packet):
-    if IP not in packet or UDP not in packet or Raw not in packet:
+    if (IP not in packet and IPv6 not in packet) or UDP not in packet or Raw not in packet:
         return None
 
     payload = bytes(packet[Raw].load)
@@ -123,9 +124,11 @@ def parse_rtp_packet(packet):
         | payload[11]
     )
 
+    network_layer = packet[IP] if IP in packet else packet[IPv6]
+
     return RTPPacket(
-        source_ip=packet[IP].src,
-        destination_ip=packet[IP].dst,
+        source_ip=network_layer.src,
+        destination_ip=network_layer.dst,
         source_port=packet[UDP].sport,
         destination_port=packet[UDP].dport,
         sequence=sequence,

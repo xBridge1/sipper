@@ -37,6 +37,9 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "signaling_state": summary["signaling_state"],
                 "media_state": summary["media_state"],
                 "media_direction": summary.get("media_direction", "unknown"),
+                "media_quality": summary.get("media_quality", "unknown"),
+                "signaling_timeline": summary.get("signaling_timeline", []),
+                "signaling_timings": summary.get("signaling_timings", {}),
                 "severity": summary["severity"],
                 "primary_issue": summary["primary_issue"],
                 "codec_guesses": summary["codec_guesses"],
@@ -59,6 +62,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                         "average_jitter": 0.0,
                         "max_jitter": 0.0,
                         "ssrcs": [],
+                        "directions": {},
                     },
                 ),
             }

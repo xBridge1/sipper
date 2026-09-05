@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 from scapy.packet import Raw
 from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet6 import IPv6
 
 
 @dataclass
@@ -21,6 +22,11 @@ class SIPMessage:
     is_fragmented: bool
     packet_time: float
     sdp_media: list["SDPMediaDescription"] = field(default_factory=list)
+    cseq_method: str | None = None
+    from_tag: str | None = None
+    to_tag: str | None = None
+    contact: str | None = None
+    via_branch: str | None = None
 
 
 @dataclass
@@ -32,6 +38,9 @@ class SDPMediaDescription:
     connection_address: str | None = None
     codecs: dict[int, str] = field(default_factory=dict)
     direction: str = "sendrecv"
+    rtcp_port: int | None = None
+    media_id: str | None = None
+    rtcp_mux: bool = False
 
 
 @dataclass
@@ -50,6 +59,7 @@ class SIPFlow:
     error_responses: int = 0
     large_header_messages: int = 0
     fragmented_messages: int = 0
+    registers: int = 0
 
 
 def parse_sip_message(packet):
@@ -101,14 +111,22 @@ def _parse_sip_payload(
     header_count = 0
     max_header_length = 0
 
-    for line in lines[1:]:
-        line = line.strip()
+    previous_header = None
+
+    for raw_line in lines[1:]:
+        if raw_line.startswith((" ", "\t")) and previous_header is not None:
+            headers[previous_header] = f"{headers[previous_header]} {raw_line.strip()}"
+            continue
+
+        line = raw_line.strip()
 
         if not line or ":" not in line:
             continue
 
         name, value = line.split(":", 1)
-        headers[name.strip().lower()] = value.strip()
+        header_name = _normalize_header_name(name)
+        headers[header_name] = value.strip()
+        previous_header = header_name
         header_count += 1
         max_header_length = max(max_header_length, len(line.encode("utf-8")))
 
@@ -118,6 +136,10 @@ def _parse_sip_payload(
         return None
 
     sdp_media = _parse_sdp_media(text)
+    cseq_method = _extract_cseq_method(headers.get("cseq"))
+    from_tag = _extract_parameter(headers.get("from"), "tag")
+    to_tag = _extract_parameter(headers.get("to"), "tag")
+    via_branch = _extract_parameter(headers.get("via"), "branch")
 
     if start_line.startswith("SIP/2.0 "):
         parts = start_line.split(" ", 2)
@@ -141,6 +163,11 @@ def _parse_sip_payload(
             is_fragmented=is_fragmented,
             packet_time=packet_time,
             sdp_media=sdp_media,
+            cseq_method=cseq_method,
+            from_tag=from_tag,
+            to_tag=to_tag,
+            contact=headers.get("contact"),
+            via_branch=via_branch,
         )
 
     parts = start_line.split(" ", 2)
@@ -164,6 +191,11 @@ def _parse_sip_payload(
         is_fragmented=is_fragmented,
         packet_time=packet_time,
         sdp_media=sdp_media,
+        cseq_method=cseq_method,
+        from_tag=from_tag,
+        to_tag=to_tag,
+        contact=headers.get("contact"),
+        via_branch=via_branch,
     )
 
 
@@ -187,7 +219,7 @@ def build_sip_flows(packets):
 def _extract_tcp_sip_messages(packet, tcp_buffers):
     payload = _extract_payload(packet)
 
-    if not payload or IP not in packet:
+    if not payload or (IP not in packet and IPv6 not in packet):
         return []
 
     source_ip, destination_ip, source_port, destination_port = _extract_endpoints(packet)
@@ -196,10 +228,10 @@ def _extract_tcp_sip_messages(packet, tcp_buffers):
 
     if not state["payload"]:
         state["packet_time"] = float(packet.time)
-        state["fragmented"] = bool(packet[IP].flags.MF or packet[IP].frag > 0)
+        state["fragmented"] = bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
 
     state["payload"] += payload
-    state["fragmented"] = state["fragmented"] or bool(packet[IP].flags.MF or packet[IP].frag > 0)
+    state["fragmented"] = state["fragmented"] or bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
     messages = []
 
     while True:
@@ -223,7 +255,7 @@ def _extract_tcp_sip_messages(packet, tcp_buffers):
 
         if state["payload"]:
             state["packet_time"] = float(packet.time)
-            state["fragmented"] = bool(packet[IP].flags.MF or packet[IP].frag > 0)
+            state["fragmented"] = bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
 
     return messages
 
@@ -246,7 +278,7 @@ def _pop_complete_sip_message(state):
 
     for line in header_text.splitlines()[1:]:
         name, separator, value = line.partition(":")
-        if separator and name.strip().lower() == "content-length" and value.strip().isdigit():
+        if separator and _normalize_header_name(name) == "content-length" and value.strip().isdigit():
             content_length = int(value.strip())
             break
 
@@ -284,6 +316,9 @@ def _add_message_to_flow(flows, message):
 
     if message.is_request and message.method == "CANCEL":
         flow.cancels += 1
+
+    if message.is_request and message.method == "REGISTER":
+        flow.registers += 1
 
     if not message.is_request:
         flow.responses += 1
@@ -336,14 +371,15 @@ def _parse_sdp_media(text):
 
         if line.startswith("m="):
             parts = line[2:].split()
-            if len(parts) < 3 or not parts[1].isdigit():
+            port_value = parts[1].split("/", 1)[0]
+            if len(parts) < 3 or not port_value.isdigit():
                 current_media = None
                 continue
 
             payload_types = [int(value) for value in parts[3:] if value.isdigit()]
             current_media = SDPMediaDescription(
                 media_type=parts[0],
-                port=int(parts[1]),
+                port=int(port_value),
                 protocol=parts[2],
                 payload_types=payload_types,
             )
@@ -364,6 +400,20 @@ def _parse_sdp_media(text):
             if len(parts) == 2 and parts[0].isdigit():
                 codec = parts[1].split("/", 1)[0]
                 current_media.codecs[int(parts[0])] = codec
+            continue
+
+        if line.startswith("a=rtcp:") and current_media is not None:
+            value = line[len("a=rtcp:"):].split(None, 1)[0]
+            if value.isdigit():
+                current_media.rtcp_port = int(value)
+            continue
+
+        if line.startswith("a=mid:") and current_media is not None:
+            current_media.media_id = line[len("a=mid:"):].strip() or None
+            continue
+
+        if line == "a=rtcp-mux" and current_media is not None:
+            current_media.rtcp_mux = True
 
     for media in media_descriptions:
         if media.connection_address is None:
@@ -375,8 +425,9 @@ def _parse_sdp_media(text):
 
 
 def _extract_endpoints(packet):
-    source_ip = packet[IP].src if IP in packet else ""
-    destination_ip = packet[IP].dst if IP in packet else ""
+    network_layer = packet[IP] if IP in packet else packet[IPv6] if IPv6 in packet else None
+    source_ip = network_layer.src if network_layer is not None else ""
+    destination_ip = network_layer.dst if network_layer is not None else ""
 
     if UDP in packet:
         return source_ip, destination_ip, packet[UDP].sport, packet[UDP].dport
@@ -385,3 +436,37 @@ def _extract_endpoints(packet):
         return source_ip, destination_ip, packet[TCP].sport, packet[TCP].dport
 
     return source_ip, destination_ip, 0, 0
+
+
+def _normalize_header_name(name):
+    compact_names = {
+        "i": "call-id",
+        "f": "from",
+        "t": "to",
+        "v": "via",
+        "m": "contact",
+        "l": "content-length",
+        "c": "content-type",
+    }
+    normalized = name.strip().lower()
+    return compact_names.get(normalized, normalized)
+
+
+def _extract_parameter(value, parameter_name):
+    if not value:
+        return None
+
+    for parameter in value.split(";")[1:]:
+        name, separator, parameter_value = parameter.strip().partition("=")
+        if separator and name.lower() == parameter_name:
+            return parameter_value.strip()
+
+    return None
+
+
+def _extract_cseq_method(value):
+    if not value:
+        return None
+
+    parts = value.split()
+    return parts[1].upper() if len(parts) >= 2 else None

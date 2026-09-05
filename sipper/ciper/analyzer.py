@@ -4,15 +4,17 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 
 from ciper.rtp import parse_rtp_packet
 from ciper.sip import parse_sip_message
+from ciper.analysis_control import raise_if_cancelled
 
 
-def analyze_packets(packets):
+def analyze_packets(packets, cancel_event=None):
     protocols = Counter()
     source_ips = Counter()
     destination_ips = Counter()
     tcp_connections = Counter()
 
     for packet in packets:
+        raise_if_cancelled(cancel_event)
         if IP not in packet:
             continue
 

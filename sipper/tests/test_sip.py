@@ -1,4 +1,5 @@
 from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet6 import IPv6
 
 from ciper.engine import analyze_pcap
 from ciper.sip import build_sip_flows, parse_sip_message
@@ -67,6 +68,43 @@ def test_parse_sip_message_extracts_sdp_media_direction():
 
     assert message is not None
     assert message.sdp_media[0].direction == "sendonly"
+
+
+def test_parse_sip_message_supports_compact_headers_ipv6_and_sdp_details():
+    packet = (
+        IPv6(src="2001:db8::10", dst="2001:db8::20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"i: compact-call\r\n"
+            b"f: <sip:100@pbx.local>;tag=caller-tag\r\n"
+            b"t: <sip:200@pbx.local>;tag=callee-tag\r\n"
+            b"v: SIP/2.0/UDP edge.local;branch=z9hG4bK-123\r\n"
+            b"m: <sip:100@2001:db8::10>\r\n"
+            b"CSeq: 10 INVITE\r\n\r\n"
+            b"v=0\r\n"
+            b"c=IN IP6 2001:db8::10\r\n"
+            b"m=audio 4000/2 RTP/AVP 0\r\n"
+            b"a=mid:audio-main\r\n"
+            b"a=rtcp:4001 IN IP6 2001:db8::10\r\n"
+            b"a=rtcp-mux\r\n"
+        )
+    )
+
+    message = parse_sip_message(packet)
+
+    assert message is not None
+    assert message.call_id == "compact-call"
+    assert message.source_ip == "2001:db8::10"
+    assert message.cseq_method == "INVITE"
+    assert message.from_tag == "caller-tag"
+    assert message.to_tag == "callee-tag"
+    assert message.via_branch == "z9hG4bK-123"
+    assert message.contact == "<sip:100@2001:db8::10>"
+    assert message.sdp_media[0].port == 4000
+    assert message.sdp_media[0].rtcp_port == 4001
+    assert message.sdp_media[0].media_id == "audio-main"
+    assert message.sdp_media[0].rtcp_mux is True
 
 
 def test_parse_sip_response_message():

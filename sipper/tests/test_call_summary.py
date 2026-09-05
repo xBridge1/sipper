@@ -194,3 +194,81 @@ def test_engine_does_not_flag_missing_rtp_when_sdp_disables_audio_port():
     assert summary["media_direction"] == "inactive"
     assert summary["media_state"] == "inactive_media"
     assert "sip_call_established_without_rtp" not in summary["finding_types"]
+
+
+def test_engine_uses_latest_reinvite_sdp_and_reports_directional_quality():
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: reinvite-call\r\n\r\n"
+            b"v=0\r\nm=audio 4000 RTP/AVP 0\r\n"
+        ),
+        IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"SIP/2.0 200 OK\r\n"
+            b"Call-ID: reinvite-call\r\n\r\n"
+            b"v=0\r\nm=audio 4002 RTP/AVP 0\r\n"
+        ),
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: reinvite-call\r\n\r\n"
+            b"v=0\r\nm=audio 5000 RTP/AVP 8\r\n"
+        ),
+        IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"SIP/2.0 200 OK\r\n"
+            b"Call-ID: reinvite-call\r\n\r\n"
+            b"v=0\r\nm=audio 5002 RTP/AVP 8\r\n"
+        ),
+        make_rtp_packet("192.168.1.10", "192.168.1.20", 4000, 4002, 100, 160, 1234),
+        make_rtp_packet("192.168.1.10", "192.168.1.20", 5000, 5002, 100, 160, 5678, payload_type=8),
+        make_rtp_packet("192.168.1.10", "192.168.1.20", 5000, 5002, 101, 320, 5678, payload_type=8),
+    ]
+
+    summary = analyze_pcap(packets)["call_summaries"][0]
+
+    assert summary["rtp_metrics"]["ssrcs"] == [5678]
+    assert summary["rtp_metrics"]["directions"]
+    assert summary["media_quality"] == "good"
+
+
+def test_engine_reports_sip_signaling_timeline_and_timings():
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / b"INVITE sip:100@pbx.local SIP/2.0\r\nCall-ID: timeline-call\r\nCSeq: 1 INVITE\r\n\r\n",
+        IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=5060, dport=5060)
+        / b"SIP/2.0 100 Trying\r\nCall-ID: timeline-call\r\nCSeq: 1 INVITE\r\n\r\n",
+        IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=5060, dport=5060)
+        / b"SIP/2.0 180 Ringing\r\nCall-ID: timeline-call\r\nCSeq: 1 INVITE\r\n\r\n",
+        IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=5060, dport=5060)
+        / b"SIP/2.0 200 OK\r\nCall-ID: timeline-call\r\nCSeq: 1 INVITE\r\n\r\n",
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / b"ACK sip:100@pbx.local SIP/2.0\r\nCall-ID: timeline-call\r\nCSeq: 1 ACK\r\n\r\n",
+    ]
+    for index, packet in enumerate(packets):
+        packet.time = 100.0 + (index * 0.1)
+
+    summary = analyze_pcap(packets)["call_summaries"][0]
+
+    assert [event["event"] for event in summary["signaling_timeline"]] == [
+        "INVITE",
+        "100 Trying",
+        "180 Ringing",
+        "200 OK",
+        "ACK",
+    ]
+    assert round(summary["signaling_timings"]["invite_to_trying"], 3) == 0.1
+    assert round(summary["signaling_timings"]["invite_to_ringing"], 3) == 0.2
+    assert round(summary["signaling_timings"]["invite_to_ok"], 3) == 0.3
+    assert round(summary["signaling_timings"]["ok_to_ack"], 3) == 0.1

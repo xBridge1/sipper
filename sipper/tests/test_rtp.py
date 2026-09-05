@@ -4,6 +4,7 @@ from scapy.layers.inet import IP, UDP
 
 from ciper.engine import analyze_pcap
 from ciper.rtp import build_rtp_streams, parse_rtp_packet
+from ciper.settings import AnalysisSettings
 
 
 def make_rtp_packet(
@@ -127,6 +128,19 @@ def test_engine_detects_rtp_packet_loss():
 
     result = analyze_pcap(packets)
     assert "rtp_packet_loss" in {f.type for f in result["findings"]}
+
+
+def test_engine_applies_rtp_loss_severity_setting():
+    packets = [
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 100, 160, 1234),
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 101, 320, 1234),
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 103, 640, 1234),
+    ]
+
+    result = analyze_pcap(packets, AnalysisSettings(rtp_loss_high_threshold=3))
+    finding = next(finding for finding in result["findings"] if finding.type == "rtp_packet_loss")
+
+    assert finding.severity == "medium"
 
 
 def test_engine_detects_rtp_out_of_order():
