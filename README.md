@@ -2,7 +2,7 @@
 
 > **SIP PCAP Insights** - analise offline de capturas PCAP para diagnostico de rede e VoIP.
 
-![SIPPER](logo/splash.png)
+![SIPPER](sipper/logo/splash.png)
 
 O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de rede, sinalizacao SIP e midia RTP. Ele identifica evidencias, aponta origem e destino, classifica severidade e apresenta recomendacoes para acelerar a investigacao de chamadas.
 
