@@ -2,8 +2,8 @@ import sys
 from threading import Event
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QObject, QPointF, QRectF, QSize, QPropertyAnimation, QThread, Qt, Signal, Slot, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QObject, QPointF, QRectF, QSize, QPropertyAnimation, QThread, QTimer, QUrl, Qt, Signal, Slot, QVariantAnimation
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -41,18 +41,19 @@ from ciper.gui.theme import FONTS, THEMES
 from ciper.gui.viewmodels import build_dashboard_viewmodel
 from ciper.pcap_reader import iter_pcap
 from ciper.reporting import build_report_payload, export_csv, export_json, export_pdf
+from ciper.resources import resource_path
 from ciper.rtp import parse_rtp_packet
 from ciper.settings import AnalysisSettings, load_settings, save_settings
 from ciper.sip import parse_sip_message
 from ciper.logging_setup import configure_logging
+from ciper.updater import CURRENT_VERSION, check_for_update
 from scapy.layers.inet import ICMP, IP, TCP, UDP
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LOGO_ICON_PATH = PROJECT_ROOT / "logo" / "sipper_1_pulse_preview.ico"
-LOGO_PREVIEW_PATH = PROJECT_ROOT / "logo" / "9761bd23-eb2a-4777-8de4-2910814a3f4c.png"
-DARK_SPLASH_LOGO_PATH = PROJECT_ROOT / "logo" / "splash.png"
-LIGHT_SPLASH_LOGO_PATH = PROJECT_ROOT / "logo" / "splash_black.png"
+LOGO_ICON_PATH = resource_path("logo", "e4d70232-e1e2-4761-bd1b-dc88ac325f6e.png")
+LOGO_PREVIEW_PATH = resource_path("logo", "9761bd23-eb2a-4777-8de4-2910814a3f4c.png")
+DARK_SPLASH_LOGO_PATH = resource_path("logo", "splash.png")
+LIGHT_SPLASH_LOGO_PATH = resource_path("logo", "splash_black.png")
 
 
 def _font(key):
@@ -133,6 +134,14 @@ class AnalysisWorker(QObject):
         except Exception as error:
             self.logger.exception("Falha durante analise de PCAP: %s", self.file_path)
             self.failed.emit(str(error))
+
+
+class UpdateCheckWorker(QObject):
+    completed = Signal(object)
+
+    @Slot()
+    def run(self):
+        self.completed.emit(check_for_update())
 
 
 def _iter_with_cancellation(packets, cancel_event):
@@ -654,6 +663,9 @@ class SipperWindow(QMainWindow):
         self.selected_finding_key = None
         self.analysis_thread = None
         self.analysis_worker = None
+        self.update_thread = None
+        self.update_worker = None
+        self.available_update = None
         self.page_buttons = {}
         self.rtp_nav_buttons = {}
         self.sip_nav_buttons = {}
@@ -664,6 +676,7 @@ class SipperWindow(QMainWindow):
         self._build_ui()
         self._apply_theme()
         self._render_all()
+        QTimer.singleShot(1500, self._check_for_update)
 
     def _build_ui(self):
         root = QWidget()
@@ -1177,8 +1190,15 @@ class SipperWindow(QMainWindow):
                 preview_pixmap.scaled(560, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
         self.about_text = self._make_text()
+        self.about_update_status = QLabel()
+        self.about_update_status.setObjectName("mutedLabel")
+        self.about_update_button = QPushButton("Verificar atualizacoes")
+        self.about_update_button.setObjectName("secondaryButton")
+        self.about_update_button.clicked.connect(self._handle_update_action)
         card.add_widget(self.about_logo)
         card.add_widget(self.about_text)
+        card.add_widget(self.about_update_status)
+        card.add_widget(self.about_update_button)
         layout.addWidget(card)
         self._register_page_cards("Sobre", card)
 
@@ -2113,6 +2133,7 @@ class SipperWindow(QMainWindow):
             "\n".join(
                 [
                     "SIPPER",
+                    f"Versao instalada: {CURRENT_VERSION}",
                     "",
                     "Analisador offline de PCAP com foco em diagnostico de rede, VoIP, SIP e RTP.",
                     "",
@@ -2123,6 +2144,53 @@ class SipperWindow(QMainWindow):
                 ]
             )
         )
+
+    def _handle_update_action(self):
+        if self.available_update is not None:
+            if QDesktopServices.openUrl(QUrl(self.available_update.download_url)):
+                self._set_status("Download da atualizacao aberto no navegador")
+            else:
+                self._set_status("Nao foi possivel abrir o link da atualizacao")
+            return
+        self._check_for_update()
+
+    def _check_for_update(self):
+        if self.update_thread is not None:
+            return
+
+        self.about_update_button.setEnabled(False)
+        self.about_update_status.setText("Verificando atualizacoes...")
+        self.update_thread = QThread(self)
+        self.update_worker = UpdateCheckWorker()
+        self.update_worker.moveToThread(self.update_thread)
+        self.update_thread.started.connect(self.update_worker.run)
+        self.update_worker.completed.connect(self._on_update_check_completed)
+        self.update_worker.completed.connect(self.update_thread.quit)
+        self.update_thread.finished.connect(self.update_worker.deleteLater)
+        self.update_thread.finished.connect(self._cleanup_update_worker)
+        self.update_thread.start()
+
+    def _on_update_check_completed(self, update):
+        self.available_update = update
+        self.about_update_button.setEnabled(True)
+        if update is None:
+            self.about_update_status.setText("Voce ja esta na versao mais recente ou a verificacao esta indisponivel.")
+            self.about_update_button.setText("Verificar atualizacoes")
+            return
+
+        self.about_update_status.setText(f"Atualizacao {update.version} disponivel.")
+        self.about_update_button.setText(f"Baixar SIPPER {update.version}")
+        self._set_status(f"Atualizacao {update.version} disponivel")
+
+    def _cleanup_update_worker(self):
+        self.update_worker = None
+        self.update_thread = None
+
+    def closeEvent(self, event):
+        if self.update_thread is not None:
+            self.update_thread.quit()
+            self.update_thread.wait(4000)
+        super().closeEvent(event)
 
     def _fill_calls_table(self, table, calls):
         palette = THEMES[self.current_theme]

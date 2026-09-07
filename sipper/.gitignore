@@ -5,4 +5,6 @@ __pycache__/
 .vscode/
 dist/
 build/
+build-assets/
 *.spec
+dist-installer/

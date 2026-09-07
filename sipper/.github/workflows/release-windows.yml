@@ -1,0 +1,75 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create environment and install dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Run test suite
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -m pytest
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          .\packaging\build.ps1 -Version $version
+          Compress-Archive -Path dist\SIPPER\* -DestinationPath "dist-installer\SIPPER-portable-$version.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIPPER-${{ github.ref_name }}
+          path: dist-installer\*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $releaseBody = @{
+            tag_name = $env:RELEASE_TAG
+            name = "SIPPER $env:RELEASE_TAG"
+            generate_release_notes = $true
+          } | ConvertTo-Json
+          $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:REPOSITORY/releases" -Headers $headers -ContentType "application/json" -Body $releaseBody
+          $uploadUrl = $release.upload_url -replace "\{\?name,label\}", ""
+          Get-ChildItem "dist-installer" -File | ForEach-Object {
+            $assetName = [System.Uri]::EscapeDataString($_.Name)
+            Invoke-RestMethod -Method Post -Uri "$uploadUrl?name=$assetName" -Headers $headers -ContentType "application/octet-stream" -InFile $_.FullName
+          }
