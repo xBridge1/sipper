@@ -71,9 +71,23 @@ jobs:
             name = "SIPPER $env:RELEASE_TAG"
             generate_release_notes = $true
           } | ConvertTo-Json
-          $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:REPOSITORY/releases" -Headers $headers -ContentType "application/json" -Body $releaseBody
+          try {
+            $release = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$env:REPOSITORY/releases/tags/$env:RELEASE_TAG" -Headers $headers
+          }
+          catch {
+            $statusCode = $_.Exception.Response.StatusCode.value__
+            if ($statusCode -ne 404) {
+              throw
+            }
+            $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:REPOSITORY/releases" -Headers $headers -ContentType "application/json" -Body $releaseBody
+          }
           $uploadUrl = $release.upload_url -replace "\{\?name,label\}", ""
           Get-ChildItem "dist-installer" -File | ForEach-Object {
-            $assetName = [System.Uri]::EscapeDataString($_.Name)
-            Invoke-RestMethod -Method Post -Uri "$uploadUrl?name=$assetName" -Headers $headers -ContentType "application/octet-stream" -InFile $_.FullName
+            $releaseAssetName = $_.Name
+            $existingAsset = $release.assets | Where-Object { $_.name -eq $releaseAssetName }
+            if ($existingAsset) {
+              Invoke-RestMethod -Method Delete -Uri $existingAsset.url -Headers $headers
+            }
+            $assetName = [System.Uri]::EscapeDataString($releaseAssetName)
+            Invoke-RestMethod -Method Post -Uri "${uploadUrl}?name=$assetName" -Headers $headers -ContentType "application/octet-stream" -InFile $_.FullName
           }
