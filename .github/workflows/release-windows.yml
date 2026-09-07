@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    working-directory: sipper
+
 jobs:
   release:
     runs-on: windows-latest
@@ -47,7 +51,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SIPPER-${{ github.ref_name }}
-          path: dist-installer\*
+          path: sipper\dist-installer\*
           if-no-files-found: error
 
       - name: Publish GitHub release
