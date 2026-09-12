@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHeaderView,
     QHBoxLayout,
+    QLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -34,12 +36,11 @@ from PySide6.QtWidgets import (
     QStyle,
 )
 
-from ciper.analyzer import analyze_packets
+from ciper.analyzer import PacketAnalysisAccumulator
 from ciper.analysis_control import AnalysisCancelled, raise_if_cancelled
 from ciper.engine import analyze_pcap_file
 from ciper.gui.theme import FONTS, THEMES
 from ciper.gui.viewmodels import build_dashboard_viewmodel
-from ciper.pcap_reader import iter_pcap
 from ciper.reporting import build_report_payload, export_csv, export_json, export_pdf
 from ciper.resources import resource_path
 from ciper.rtp import parse_rtp_packet
@@ -114,16 +115,25 @@ class AnalysisWorker(QObject):
                 )
             self.progress_changed.emit("Lendo arquivo PCAP")
             self.progress_changed.emit("Classificando protocolos")
-            packet_analysis = analyze_packets(iter_pcap(self.file_path), self.cancel_event)
+            packet_analysis = PacketAnalysisAccumulator(self.cancel_event)
+            traffic_analysis = TrafficAccumulator(self.settings.max_traffic_points)
+
+            def collect_packet_metrics(packet):
+                packet_analysis.add(packet)
+                traffic_analysis.add(packet)
+
             self.progress_changed.emit("Correlacionando rede, SIP e RTP")
-            engine_result = analyze_pcap_file(self.file_path, self.settings, self.cancel_event)
-            self.progress_changed.emit("Preparando graficos")
-            traffic_counts, traffic_labels, capture_duration = _build_traffic_counts(
-                _iter_with_cancellation(iter_pcap(self.file_path), self.cancel_event), self.settings.max_traffic_points
+            engine_result = analyze_pcap_file(
+                self.file_path,
+                self.settings,
+                self.cancel_event,
+                collect_packet_metrics,
             )
+            self.progress_changed.emit("Preparando graficos")
+            traffic_counts, traffic_labels, capture_duration = traffic_analysis.result()
             raise_if_cancelled(self.cancel_event)
             self.completed.emit(
-                packet_analysis,
+                packet_analysis.result(),
                 engine_result,
                 traffic_counts,
                 traffic_labels,
@@ -150,41 +160,50 @@ def _iter_with_cancellation(packets, cancel_event):
         yield packet
 
 
-def _build_traffic_counts(packets, max_bucket_count=720):
-    names = ["SIP", "RTP", "TCP", "UDP", "ICMP"]
-    max_bucket_count = max(1, max_bucket_count)
-    buckets = {name: {} for name in names}
-    first_time = None
-    last_time = None
+class TrafficAccumulator:
+    def __init__(self, max_bucket_count=720):
+        self.names = ["SIP", "RTP", "TCP", "UDP", "ICMP"]
+        self.max_bucket_count = max(1, max_bucket_count)
+        self.buckets = {name: {} for name in self.names}
+        self.first_time = None
+        self.last_time = None
 
-    for packet in packets:
+    def add(self, packet):
         if not hasattr(packet, "time"):
-            continue
+            return
         timestamp = float(packet.time)
         second = int(timestamp)
-        first_time = timestamp if first_time is None else min(first_time, timestamp)
-        last_time = timestamp if last_time is None else max(last_time, timestamp)
+        self.first_time = timestamp if self.first_time is None else min(self.first_time, timestamp)
+        self.last_time = timestamp if self.last_time is None else max(self.last_time, timestamp)
         protocol = _classify_packet_for_traffic(packet)
-        if protocol in buckets:
-            buckets[protocol][second] = buckets[protocol].get(second, 0) + 1
+        if protocol in self.buckets:
+            self.buckets[protocol][second] = self.buckets[protocol].get(second, 0) + 1
 
-    if first_time is None or last_time is None:
-        return {}, [], 0.0
+    def result(self):
+        if self.first_time is None or self.last_time is None:
+            return {}, [], 0.0
 
-    first_second = int(first_time)
-    last_second = int(last_time)
-    span_seconds = max(1, last_second - first_second + 1)
-    bucket_width = max(1, (span_seconds + max_bucket_count - 1) // max_bucket_count)
-    bucket_count = (span_seconds + bucket_width - 1) // bucket_width
-    counters = {name: [0] * bucket_count for name in names}
+        first_second = int(self.first_time)
+        last_second = int(self.last_time)
+        span_seconds = max(1, last_second - first_second + 1)
+        bucket_width = max(1, (span_seconds + self.max_bucket_count - 1) // self.max_bucket_count)
+        bucket_count = (span_seconds + bucket_width - 1) // bucket_width
+        counters = {name: [0] * bucket_count for name in self.names}
 
-    for name in names:
-        for second, count in buckets[name].items():
-            index = min((second - first_second) // bucket_width, bucket_count - 1)
-            counters[name][index] += count
+        for name in self.names:
+            for second, count in self.buckets[name].items():
+                index = min((second - first_second) // bucket_width, bucket_count - 1)
+                counters[name][index] += count
 
-    labels = [_format_axis_time(index * bucket_width) for index in range(bucket_count)]
-    return counters, labels, last_time - first_time
+        labels = [_format_axis_time(index * bucket_width) for index in range(bucket_count)]
+        return counters, labels, self.last_time - self.first_time
+
+
+def _build_traffic_counts(packets, max_bucket_count=720):
+    accumulator = TrafficAccumulator(max_bucket_count)
+    for packet in packets:
+        accumulator.add(packet)
+    return accumulator.result()
 
 
 def _classify_packet_for_traffic(packet):
@@ -752,13 +771,20 @@ class SipperWindow(QMainWindow):
             ("Sistema", [("Estatisticas", "Estatisticas", None, None), ("Configuracoes", "Configuracoes", None, None), ("Sobre", "Sobre", None, None)]),
         )
         self.nav_scroll = QScrollArea()
+        self.nav_scroll.setObjectName("navigationScroll")
         self.nav_scroll.setWidgetResizable(True)
         self.nav_scroll.setFrameShape(QFrame.NoFrame)
         self.nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.nav_scroll.setFocusPolicy(Qt.NoFocus)
+        self.nav_scroll.verticalScrollBar().setSingleStep(32)
+        self.nav_scroll.verticalScrollBar().setPageStep(160)
         nav_content = QWidget()
+        nav_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         nav_layout = QVBoxLayout(nav_content)
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(8)
+        nav_layout.setSizeConstraint(QLayout.SetMinimumSize)
         self.nav_scroll.setWidget(nav_content)
 
         for title, pages in nav_sections:
@@ -1044,7 +1070,7 @@ class SipperWindow(QMainWindow):
         self.network_protocols_text = self._make_text()
         self.network_health_text = self._make_text()
         self.network_events_table = self._make_findings_table()
-        self.network_filter = QComboBox()
+        self.network_filter = QComboBox(self)
         self.network_filter.addItem("Todos os eventos", "all")
         self.network_filter.addItem("TCP", "tcp")
         self.network_filter.addItem("UDP", "udp")
@@ -1056,7 +1082,6 @@ class SipperWindow(QMainWindow):
         self.network_detail_text = self._make_text()
         self.network_protocols.add_widget(self.network_protocols_text)
         self.network_health.add_widget(self.network_health_text)
-        self.network_events.add_widget(self.network_filter)
         self.network_events.add_widget(self.network_search)
         self.network_events.add_widget(self.network_events_table)
         self.network_detail.add_widget(self.network_detail_text)
@@ -1224,11 +1249,7 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((240, 130, 130, 110, 90, 100)):
-            table.setColumnWidth(column, width)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._configure_responsive_table(table, 72)
         table.verticalHeader().setDefaultSectionSize(28)
         table.itemSelectionChanged.connect(self._on_call_selected)
         return table
@@ -1244,11 +1265,7 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((100, 250, 150, 150)):
-            table.setColumnWidth(column, width)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._configure_responsive_table(table, 90)
         table.verticalHeader().setDefaultSectionSize(28)
         table.itemSelectionChanged.connect(self._on_finding_selected)
         return table
@@ -1266,13 +1283,17 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((180, 180, 120, 95, 125, 110)):
-            table.setColumnWidth(column, width)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._configure_responsive_table(table, 76)
         table.verticalHeader().setDefaultSectionSize(28)
         return table
+
+    def _configure_responsive_table(self, table, minimum_section_width):
+        header = table.horizontalHeader()
+        header.setMinimumSectionSize(minimum_section_width)
+        header.setDefaultSectionSize(minimum_section_width)
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setTextElideMode(Qt.ElideMiddle)
 
     def _choose_file(self):
         file_path, _selected = QFileDialog.getOpenFileName(
@@ -1357,14 +1378,6 @@ class SipperWindow(QMainWindow):
             self.analysis_thread.deleteLater()
         self.analysis_worker = None
         self.analysis_thread = None
-
-    def closeEvent(self, event):
-        if self.analysis_thread is not None:
-            self._cancel_analysis()
-            self._set_status("Cancelando analise antes de fechar")
-            event.ignore()
-            return
-        super().closeEvent(event)
 
     def _set_analysis_running(self, is_running):
         self.open_button.setEnabled(not is_running)
@@ -2187,6 +2200,11 @@ class SipperWindow(QMainWindow):
         self.update_thread = None
 
     def closeEvent(self, event):
+        if self.analysis_thread is not None:
+            self._cancel_analysis()
+            self._set_status("Cancelando analise antes de fechar")
+            event.ignore()
+            return
         if self.update_thread is not None:
             self.update_thread.quit()
             self.update_thread.wait(4000)
@@ -2208,6 +2226,7 @@ class SipperWindow(QMainWindow):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, call["call_id"])
+                item.setToolTip(str(value))
                 if column == 5:
                     item.setBackground(QColor(self._severity_color(call["severity"], palette)))
                     item.setForeground(QColor(palette["text"]))
@@ -2225,6 +2244,7 @@ class SipperWindow(QMainWindow):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, key)
+                item.setToolTip(str(value))
                 if column == 0:
                     item.setBackground(QColor(self._severity_color(finding["severity"], palette)))
                     item.setForeground(QColor(palette["text"]))
@@ -2244,7 +2264,9 @@ class SipperWindow(QMainWindow):
                 f"{stream['average_jitter'] * 1000:.1f}",
             ]
             for column, value in enumerate(values):
-                table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                table.setItem(row, column, item)
 
     def _restore_call_selection(self, table):
         if self.selected_call_id is None:

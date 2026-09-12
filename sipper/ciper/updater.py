@@ -4,9 +4,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from packaging.version import InvalidVersion, Version
+from ciper.version import installed_version
 
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = installed_version()
 REPOSITORY = "xBridge1/sipper"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 

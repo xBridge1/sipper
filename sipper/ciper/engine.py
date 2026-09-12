@@ -5,6 +5,7 @@ from ciper.udp_flows import build_udp_flows
 from ciper.pcap_reader import iter_pcap
 from ciper.settings import AnalysisSettings
 from ciper.analysis_control import raise_if_cancelled
+from scapy.layers.inet import ICMP, TCP, UDP
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
 from ciper.findings import Finding
 from ciper.detectors.icmp import (
@@ -44,25 +45,51 @@ from ciper.detectors.rtp import (
 )
 
 
-def analyze_pcap(packets, settings=None, cancel_event=None):
+def analyze_pcap(packets, settings=None, cancel_event=None, packet_observer=None):
     packet_list = list(packets)
-    return _analyze_pcap_sources(lambda: _iter_with_cancellation(iter(packet_list), cancel_event), settings, cancel_event)
-
-
-def analyze_pcap_file(file_path, settings=None, cancel_event=None):
     return _analyze_pcap_sources(
-        lambda: _iter_with_cancellation(iter_pcap(file_path), cancel_event), settings, cancel_event
+        lambda: _iter_with_cancellation(iter(packet_list), cancel_event),
+        settings,
+        cancel_event,
+        packet_observer,
     )
 
 
-def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None):
+def analyze_pcap_file(file_path, settings=None, cancel_event=None, packet_observer=None):
+    return _analyze_pcap_sources(
+        lambda: _iter_with_cancellation(iter_pcap(file_path), cancel_event),
+        settings,
+        cancel_event,
+        packet_observer,
+    )
+
+
+def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packet_observer=None):
     settings = settings or AnalysisSettings()
     raise_if_cancelled(cancel_event)
-    flows = build_tcp_flows(packet_source())
-    udp_flows = build_udp_flows(packet_source())
-    icmp_flows = build_icmp_flows(packet_source())
-    sip_flows = build_sip_flows(packet_source())
-    rtp_streams = build_rtp_streams(packet_source())
+    tcp_packets = []
+    udp_packets = []
+    icmp_packets = []
+    signaling_packets = []
+
+    for packet in packet_source():
+        raise_if_cancelled(cancel_event)
+        if packet_observer is not None:
+            packet_observer(packet)
+        if TCP in packet:
+            tcp_packets.append(packet)
+            signaling_packets.append(packet)
+        if UDP in packet:
+            udp_packets.append(packet)
+            signaling_packets.append(packet)
+        if ICMP in packet:
+            icmp_packets.append(packet)
+
+    flows = build_tcp_flows(tcp_packets)
+    udp_flows = build_udp_flows(udp_packets)
+    icmp_flows = build_icmp_flows(icmp_packets)
+    sip_flows = build_sip_flows(signaling_packets)
+    rtp_streams = build_rtp_streams(udp_packets)
 
     findings = []
 
