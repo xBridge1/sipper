@@ -7,10 +7,22 @@ from scapy.packet import Raw
 
 RTP_PAYLOAD_TYPE_NAMES = {
     0: "PCMU",
+    2: "G721",
     3: "GSM",
     4: "G723",
+    5: "DVI4/8000",
+    6: "DVI4/16000",
+    7: "LPC",
     8: "PCMA",
     9: "G722",
+    10: "L16/44100",
+    11: "L16/44100 stereo",
+    12: "QCELP",
+    13: "CN",
+    14: "MPA",
+    15: "G728",
+    16: "DVI4/11025",
+    17: "DVI4/22050",
     18: "G729",
 }
 

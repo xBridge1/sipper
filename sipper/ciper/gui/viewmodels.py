@@ -1,5 +1,7 @@
 from collections import Counter
 
+from ciper.findings import describe_responsibility
+
 
 def build_dashboard_viewmodel(packet_analysis, engine_result):
     findings = engine_result["findings"]
@@ -17,14 +19,20 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
         "protocols": protocol_items,
         "findings": [
             {
+                "key": f"{index}:{finding.type}:{finding.source_ip}:{finding.destination_ip}",
                 "type": finding.type,
                 "severity": finding.severity,
                 "source": finding.source_ip,
                 "destination": finding.destination_ip,
                 "description": finding.description,
                 "recommendation": finding.recommendation,
+                "evidence": list(getattr(finding, "evidence", [])),
+                "category": _finding_category(finding.type),
+                "responsibility": describe_responsibility(finding)[0],
+                "responsibility_confidence": describe_responsibility(finding)[1],
+                "responsibility_reason": describe_responsibility(finding)[2],
             }
-            for finding in findings
+            for index, finding in enumerate(findings)
         ],
         "severity_counts": {
             "high": severity_counts.get("high", 0),
@@ -124,9 +132,30 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
                 "interruptions": stream.interruptions,
                 "duration": stream.duration,
                 "codec_guesses": codecs_by_ssrc.get(stream.ssrc, stream.codec_guesses),
+                "payload_types": sorted(getattr(stream, "payload_types", set())),
                 "call_id": call_id_by_ssrc.get(stream.ssrc),
             }
         )
 
     items.sort(key=lambda item: item["packet_count"], reverse=True)
     return items
+
+
+def _finding_category(finding_type):
+    if finding_type.startswith("tls_"):
+        return "TLS e seguranca"
+    if finding_type.startswith("rtp_"):
+        return "RTP e midia"
+    if finding_type.startswith("sip_"):
+        if "header" in finding_type or "fragmentation" in finding_type or "content_length" in finding_type:
+            return "SIP, headers e MTU"
+        return "SIP e sinalizacao"
+    if finding_type.startswith("ip_fragment") or finding_type == "icmp_fragmentation_needed":
+        return "Fragmentacao e MTU"
+    if finding_type.startswith("tcp_"):
+        return "Rede TCP"
+    if finding_type.startswith("udp_"):
+        return "Rede UDP"
+    if finding_type.startswith("icmp_"):
+        return "Rede ICMP"
+    return "Correlacao"

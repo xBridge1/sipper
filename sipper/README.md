@@ -93,10 +93,10 @@ O projeto inclui uma cadeia de distribuicao para Windows com PyInstaller e Inno 
 2. Ative o ambiente virtual e execute:
 
 ```powershell
-.\packaging\build.ps1 -Version 1.0.0
+.\packaging\build.ps1 -Version 1.0.2
 ```
 
-O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe` e o instalador final em `dist-installer\SIPPER-Setup-1.0.0.exe`.
+O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe` e o instalador final em `dist-installer\SIPPER-Setup-1.0.2.exe`.
 
 Para montar apenas o executavel, sem exigir o Inno Setup:
 
@@ -109,8 +109,8 @@ Para montar apenas o executavel, sem exigir o Inno Setup:
 Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow executa os testes, cria o instalador e publica dois arquivos: o instalador `SIPPER-Setup-<versao>.exe` e a versao portatil `.zip`.
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 O acompanhamento fica na aba **Actions** do repositorio. Quando o workflow terminar, os arquivos estarao na aba **Releases**.

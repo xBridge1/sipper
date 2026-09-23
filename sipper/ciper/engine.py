@@ -1,11 +1,15 @@
 from ciper.flows import build_tcp_flows, build_icmp_flows
+from ciper.fragmentation import build_ip_fragment_groups
 from ciper.rtp import build_rtp_streams
 from ciper.sip import build_sip_flows
+from ciper.tls import build_tls_flows
 from ciper.udp_flows import build_udp_flows
 from ciper.pcap_reader import iter_pcap
 from ciper.settings import AnalysisSettings
 from ciper.analysis_control import raise_if_cancelled
-from scapy.layers.inet import ICMP, TCP, UDP
+from scapy.layers.inet import ICMP, IP, TCP, UDP
+from scapy.layers.inet6 import IPv6ExtHdrFragment
+from ciper.detectors.fragmentation import detect_ip_fragmentation
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
 from ciper.findings import Finding
 from ciper.detectors.icmp import (
@@ -28,10 +32,13 @@ from ciper.detectors.sip import (
     detect_sip_call_cancelled,
     detect_sip_call_terminated,
     detect_sip_error_responses,
+    detect_sip_header_fragmentation_risk,
+    detect_sip_header_validation_errors,
     detect_sip_invite_no_response,
     detect_sip_large_headers,
     detect_sip_ok_without_ack,
     detect_sip_signaling_fragmentation,
+    detect_sip_udp_fragmentation_risk,
 )
 from ciper.detectors.rtp import (
     detect_rtp_high_jitter,
@@ -42,6 +49,12 @@ from ciper.detectors.rtp import (
     detect_rtp_ssrc_change,
     detect_rtp_stream_interruption,
     detect_rtp_timestamp_anomaly,
+)
+from ciper.detectors.tls import (
+    detect_tls_client_hello_no_response,
+    detect_tls_fatal_alerts,
+    detect_tls_legacy_versions,
+    detect_tls_malformed_records,
 )
 
 
@@ -70,6 +83,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     tcp_packets = []
     udp_packets = []
     icmp_packets = []
+    fragmented_packets = []
     signaling_packets = []
 
     for packet in packet_source():
@@ -84,12 +98,19 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
             signaling_packets.append(packet)
         if ICMP in packet:
             icmp_packets.append(packet)
+        if (
+            (IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
+            or IPv6ExtHdrFragment in packet
+        ):
+            fragmented_packets.append(packet)
 
     flows = build_tcp_flows(tcp_packets)
     udp_flows = build_udp_flows(udp_packets)
     icmp_flows = build_icmp_flows(icmp_packets)
     sip_flows = build_sip_flows(signaling_packets)
     rtp_streams = build_rtp_streams(udp_packets)
+    fragment_groups = build_ip_fragment_groups(fragmented_packets)
+    tls_flows = build_tls_flows(flows)
 
     findings = []
 
@@ -99,6 +120,10 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_slow_handshakes(flows))
     findings.extend(detect_tcp_retransmissions(flows))
     findings.extend(detect_tcp_resets(flows))
+    findings.extend(detect_tls_fatal_alerts(tls_flows))
+    findings.extend(detect_tls_client_hello_no_response(tls_flows))
+    findings.extend(detect_tls_legacy_versions(tls_flows))
+    findings.extend(detect_tls_malformed_records(tls_flows))
 
     findings.extend(detect_udp_no_response(udp_flows))
     findings.extend(detect_udp_burst_no_response(udp_flows))
@@ -108,8 +133,11 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_sip_error_responses(sip_flows))
     findings.extend(detect_sip_invite_no_response(sip_flows))
     findings.extend(detect_sip_large_headers(sip_flows))
+    findings.extend(detect_sip_header_validation_errors(sip_flows))
+    findings.extend(detect_sip_header_fragmentation_risk(sip_flows))
     findings.extend(detect_sip_ok_without_ack(sip_flows))
-    findings.extend(detect_sip_signaling_fragmentation(sip_flows))
+    findings.extend(detect_sip_udp_fragmentation_risk(sip_flows))
+    findings.extend(detect_sip_signaling_fragmentation(sip_flows, fragment_groups))
     findings.extend(detect_rtp_packet_loss(rtp_streams, settings.rtp_loss_high_threshold))
     findings.extend(detect_rtp_out_of_order(rtp_streams))
     findings.extend(detect_rtp_high_jitter(rtp_streams, settings.rtp_high_jitter_threshold))
@@ -124,6 +152,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_icmp_parameter_problem(icmp_flows))
     findings.extend(detect_icmp_time_exceeded(icmp_flows))
     findings.extend(detect_icmp_unreachable(icmp_flows))
+    findings.extend(detect_ip_fragmentation(fragment_groups))
     findings.extend(correlate_findings(findings, sip_flows, rtp_streams))
     findings = prioritize_findings(findings)
     call_summaries = build_call_summaries(sip_flows, rtp_streams, findings)
@@ -132,8 +161,10 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
         "flows": flows,
         "udp_flows": udp_flows,
         "icmp_flows": icmp_flows,
+        "fragment_groups": fragment_groups,
         "sip_flows": sip_flows,
         "rtp_streams": rtp_streams,
+        "tls_flows": tls_flows,
         "findings": findings,
         "call_summaries": call_summaries,
     }

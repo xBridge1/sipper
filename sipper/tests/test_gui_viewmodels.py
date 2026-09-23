@@ -9,6 +9,7 @@ class DummyFinding:
         self.destination_ip = destination_ip
         self.description = description
         self.recommendation = recommendation
+        self.evidence = ["Evidencia de teste"]
 
 
 class DummyRTPStream:
@@ -25,6 +26,7 @@ class DummyRTPStream:
     interruptions = 0
     duration = 0.2
     codec_guesses = ["PCMU"]
+    payload_types = {0}
 
 
 def test_build_dashboard_viewmodel():
@@ -66,6 +68,9 @@ def test_build_dashboard_viewmodel():
     assert viewmodel["severity_counts"]["high"] == 1
     assert viewmodel["calls"][0]["codec_guesses"] == ["PCMU"]
     assert viewmodel["calls"][0]["key_evidence"] == ["Call-ID: CALL-1"]
+    assert viewmodel["findings"][0]["category"] == "SIP e sinalizacao"
+    assert viewmodel["findings"][0]["evidence"] == ["Evidencia de teste"]
+    assert viewmodel["findings"][0]["responsibility"] == "Em investigacao"
 
 
 def test_build_dashboard_viewmodel_exposes_rtp_stream_metrics():
@@ -97,3 +102,4 @@ def test_build_dashboard_viewmodel_exposes_rtp_stream_metrics():
     assert viewmodel["rtp_streams"][0]["loss_percent"] == 100 / 11
     assert viewmodel["rtp_streams"][0]["codec_guesses"] == ["PCMA"]
     assert viewmodel["rtp_streams"][0]["call_id"] == "CALL-1"
+    assert viewmodel["rtp_streams"][0]["payload_types"] == [0]

@@ -689,6 +689,7 @@ class SipperWindow(QMainWindow):
         self.rtp_nav_buttons = {}
         self.sip_nav_buttons = {}
         self.network_nav_buttons = {}
+        self.security_nav_buttons = {}
         self.page_widgets = {}
         self.page_cards = {}
         self.active_animations = []
@@ -740,19 +741,25 @@ class SipperWindow(QMainWindow):
         sidebar_layout.addLayout(theme_row)
 
         nav_sections = (
-            ("Resumo", [("Resumo", "Resumo", None, None)]),
             (
-                "SIP",
+                "Inicio",
                 [
-                    ("SIP Flows", "SIP", "sip", "all"),
-                    ("SIP Errors", "SIP", "sip", "errors"),
-                    ("Call Analysis", "SIP", "sip", "analysis"),
+                    ("Visao geral", "Resumo", None, None),
+                    ("Diagnostico", "Diagnostico", None, None),
                 ],
             ),
             (
-                "RTP",
+                "Chamadas",
                 [
-                    ("RTP Flows", "RTP", "rtp", "all"),
+                    ("Todas as chamadas", "SIP", "sip", "all"),
+                    ("Falhas de sinalizacao", "SIP", "sip", "errors"),
+                    ("Headers e MTU", "SIP", "sip", "headers"),
+                ],
+            ),
+            (
+                "Midia RTP",
+                [
+                    ("Todos os streams", "RTP", "rtp", "all"),
                     ("Jitter", "RTP", "rtp", "jitter"),
                     ("Packet Loss", "RTP", "rtp", "loss"),
                     ("Out-of-Order", "RTP", "rtp", "out_of_order"),
@@ -760,12 +767,13 @@ class SipperWindow(QMainWindow):
                 ],
             ),
             (
-                "Rede",
+                "Rede e Seguranca",
                 [
-                    ("TCP Flows", "Rede", "network", "tcp"),
-                    ("UDP Flows", "Rede", "network", "udp"),
-                    ("ICMP Flows", "Rede", "network", "icmp"),
-                    ("Findings", "Findings", None, None),
+                    ("TCP", "Rede", "network", "tcp"),
+                    ("UDP", "Rede", "network", "udp"),
+                    ("ICMP", "Rede", "network", "icmp"),
+                    ("TLS", "Seguranca", "security", "tls"),
+                    ("Fragmentacao", "Seguranca", "security", "fragmentation"),
                 ],
             ),
             ("Sistema", [("Estatisticas", "Estatisticas", None, None), ("Configuracoes", "Configuracoes", None, None), ("Sobre", "Sobre", None, None)]),
@@ -807,6 +815,11 @@ class SipperWindow(QMainWindow):
                         lambda _checked=False, name=filter_name: self._set_sip_filter(name)
                     )
                     self.sip_nav_buttons[filter_name] = button
+                elif filter_group == "security":
+                    button.clicked.connect(
+                        lambda _checked=False, name=filter_name: self._set_security_filter(name)
+                    )
+                    self.security_nav_buttons[filter_name] = button
                 else:
                     button.clicked.connect(
                         lambda _checked=False, name=filter_name: self._set_network_filter(name)
@@ -885,9 +898,11 @@ class SipperWindow(QMainWindow):
 
     def _build_pages(self):
         self._build_summary_page()
+        self._build_diagnostic_page()
         self._build_sip_page()
         self._build_rtp_page()
         self._build_network_page()
+        self._build_security_page()
         self._build_findings_page()
         self._build_statistics_page()
         self._build_settings_page()
@@ -931,7 +946,7 @@ class SipperWindow(QMainWindow):
         self.summary_calls = PanelCard("Chamadas SIP Detectadas")
         self.summary_rtp_streams = PanelCard("RTP Flows (Resumo)")
         self.summary_call_detail = PanelCard("Detalhes da Chamada")
-        self.summary_recent_findings = PanelCard("Findings Recentes")
+        self.summary_recent_findings = PanelCard("Incidentes prioritarios")
         self.summary_traffic = PanelCard("Grafico de Trafego")
 
         self.summary_kpi_row = QWidget()
@@ -953,7 +968,7 @@ class SipperWindow(QMainWindow):
         self.summary_sip_flow_button.setObjectName("secondaryButton")
         self.summary_sip_flow_button.clicked.connect(self._open_sip_flow_dialog)
         self.summary_detail_text = self._make_text()
-        self.summary_findings_table = self._make_findings_table()
+        self.summary_findings_table = self._make_incident_table()
         self.summary_traffic_chart = TrafficChart()
 
         self.summary_metrics.add_widget(self.summary_kpi_row)
@@ -970,35 +985,56 @@ class SipperWindow(QMainWindow):
         layout.addWidget(self.summary_metrics, 0, 0)
         layout.addWidget(self.summary_protocols, 0, 1)
         layout.addWidget(self.summary_findings, 0, 2)
-        layout.addWidget(self.summary_calls, 1, 0)
-        layout.addWidget(self.summary_rtp_streams, 1, 1)
-        layout.addWidget(self.summary_call_detail, 1, 2, 3, 1)
-        layout.addWidget(self.summary_recent_findings, 2, 0, 1, 2)
-        layout.addWidget(self.summary_traffic, 3, 0, 1, 2)
+        layout.addWidget(self.summary_recent_findings, 1, 0, 1, 3)
+        layout.addWidget(self.summary_traffic, 2, 0, 1, 3)
         self._register_page_cards(
             "Resumo",
             self.summary_metrics,
             self.summary_protocols,
             self.summary_findings,
-            self.summary_calls,
-            self.summary_rtp_streams,
-            self.summary_call_detail,
             self.summary_recent_findings,
             self.summary_traffic,
         )
 
+    def _build_diagnostic_page(self):
+        _page, layout = self._new_grid_page("Diagnostico", [4, 5], [0, 1])
+        self.diagnostic_priority = PanelCard("Prioridade de Acao")
+        self.diagnostic_scope = PanelCard("Escopo do Impacto")
+        self.diagnostic_incidents = PanelCard("Fila de Incidentes")
+        self.diagnostic_detail = PanelCard("Evidencia e Proxima Acao")
+        self.diagnostic_priority_text = self._make_text()
+        self.diagnostic_scope_text = self._make_text()
+        self.diagnostic_incidents_table = self._make_incident_table()
+        self.diagnostic_detail_text = self._make_text()
+        self.diagnostic_priority.add_widget(self.diagnostic_priority_text)
+        self.diagnostic_scope.add_widget(self.diagnostic_scope_text)
+        self.diagnostic_incidents.add_widget(self.diagnostic_incidents_table)
+        self.diagnostic_detail.add_widget(self.diagnostic_detail_text)
+        layout.addWidget(self.diagnostic_priority, 0, 0)
+        layout.addWidget(self.diagnostic_scope, 0, 1)
+        layout.addWidget(self.diagnostic_incidents, 1, 0)
+        layout.addWidget(self.diagnostic_detail, 1, 1)
+        self._register_page_cards(
+            "Diagnostico",
+            self.diagnostic_priority,
+            self.diagnostic_scope,
+            self.diagnostic_incidents,
+            self.diagnostic_detail,
+        )
+
     def _build_sip_page(self):
         _page, layout = self._new_grid_page("SIP", [5, 4], [0, 1])
-        self.sip_state = PanelCard("Estado de Sinalizacao")
-        self.sip_findings = PanelCard("Erros SIP")
-        self.sip_calls = PanelCard("Fluxos SIP")
-        self.sip_detail = PanelCard("Detalhe da Chamada")
+        self.sip_state = PanelCard("Estado da sinalizacao")
+        self.sip_findings = PanelCard("Falhas de sinalizacao")
+        self.sip_calls = PanelCard("Chamadas filtradas")
+        self.sip_detail = PanelCard("Jornada da chamada")
         self.sip_state_text = self._make_text()
         self.sip_findings_text = self._make_text()
         self.sip_calls_table = self._make_calls_table()
         self.sip_filter = QComboBox()
         self.sip_filter.addItem("Todos os fluxos", "all")
         self.sip_filter.addItem("Com erro de sinalizacao", "errors")
+        self.sip_filter.addItem("Headers e MTU", "headers")
         self.sip_filter.addItem("Analise de chamadas", "analysis")
         self.sip_filter.currentIndexChanged.connect(self._on_sip_filter_changed)
         self.sip_search = QLineEdit()
@@ -1029,10 +1065,10 @@ class SipperWindow(QMainWindow):
 
     def _build_rtp_page(self):
         _page, layout = self._new_grid_page("RTP", [5, 4], [0, 1])
-        self.rtp_streams = PanelCard("RTP Streams")
-        self.rtp_health = PanelCard("Saude de Midia")
-        self.rtp_calls = PanelCard("Chamadas com Midia")
-        self.rtp_detail = PanelCard("Detalhe RTP")
+        self.rtp_streams = PanelCard("Streams e codecs")
+        self.rtp_health = PanelCard("Qualidade de midia")
+        self.rtp_calls = PanelCard("Chamadas com midia")
+        self.rtp_detail = PanelCard("Contexto da chamada")
         self.rtp_streams_table = self._make_rtp_table()
         self.rtp_filter = QComboBox()
         self.rtp_filter.addItem("Todos os streams", "all")
@@ -1063,14 +1099,14 @@ class SipperWindow(QMainWindow):
 
     def _build_network_page(self):
         _page, layout = self._new_grid_page("Rede", [4, 5], [0, 1])
-        self.network_protocols = PanelCard("Protocolos de Rede")
-        self.network_health = PanelCard("Saude da Rede")
-        self.network_events = PanelCard("Eventos TCP UDP ICMP")
-        self.network_detail = PanelCard("Detalhe do Evento")
+        self.network_protocols = PanelCard("Contexto de rede")
+        self.network_health = PanelCard("Falhas da camada")
+        self.network_events = PanelCard("Eventos TCP, UDP e ICMP")
+        self.network_detail = PanelCard("Evidencia do evento")
         self.network_protocols_text = self._make_text()
         self.network_health_text = self._make_text()
         self.network_events_table = self._make_findings_table()
-        self.network_filter = QComboBox(self)
+        self.network_filter = QComboBox()
         self.network_filter.addItem("Todos os eventos", "all")
         self.network_filter.addItem("TCP", "tcp")
         self.network_filter.addItem("UDP", "udp")
@@ -1090,6 +1126,41 @@ class SipperWindow(QMainWindow):
         layout.addWidget(self.network_events, 1, 0)
         layout.addWidget(self.network_detail, 1, 1)
         self._register_page_cards("Rede", self.network_protocols, self.network_health, self.network_events, self.network_detail)
+
+    def _build_security_page(self):
+        _page, layout = self._new_grid_page("Seguranca", [4, 4, 5], [0, 1])
+        self.security_tls = PanelCard("Estado TLS")
+        self.security_fragmentation = PanelCard("Fragmentacao e MTU")
+        self.security_events = PanelCard("Eventos de seguranca")
+        self.security_detail = PanelCard("Evidencia do evento")
+        self.security_tls_text = self._make_text()
+        self.security_fragmentation_text = self._make_text()
+        self.security_events_table = self._make_findings_table()
+        self.security_filter = QComboBox()
+        self.security_filter.addItem("Todos os eventos", "all")
+        self.security_filter.addItem("TLS", "tls")
+        self.security_filter.addItem("Fragmentacao", "fragmentation")
+        self.security_filter.currentIndexChanged.connect(self._on_security_filter_changed)
+        self.security_search = QLineEdit()
+        self.security_search.setPlaceholderText("Buscar IP ou tipo de evento")
+        self.security_search.textChanged.connect(self._render_security_page)
+        self.security_detail_text = self._make_text()
+        self.security_tls.add_widget(self.security_tls_text)
+        self.security_fragmentation.add_widget(self.security_fragmentation_text)
+        self.security_events.add_widget(self.security_search)
+        self.security_events.add_widget(self.security_events_table)
+        self.security_detail.add_widget(self.security_detail_text)
+        layout.addWidget(self.security_tls, 0, 0)
+        layout.addWidget(self.security_fragmentation, 0, 1, 1, 2)
+        layout.addWidget(self.security_events, 1, 0, 1, 2)
+        layout.addWidget(self.security_detail, 1, 2)
+        self._register_page_cards(
+            "Seguranca",
+            self.security_tls,
+            self.security_fragmentation,
+            self.security_events,
+            self.security_detail,
+        )
 
     def _build_findings_page(self):
         _page, layout = self._new_grid_page("Findings", [6, 4], [0, 1])
@@ -1255,8 +1326,8 @@ class SipperWindow(QMainWindow):
         return table
 
     def _make_findings_table(self):
-        table = QTableWidget(0, 4)
-        table.setHorizontalHeaderLabels(["Severidade", "Tipo", "Origem", "Destino"])
+        table = QTableWidget(0, 5)
+        table.setHorizontalHeaderLabels(["Severidade", "Camada", "Problema", "Origem", "Destino"])
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1270,10 +1341,26 @@ class SipperWindow(QMainWindow):
         table.itemSelectionChanged.connect(self._on_finding_selected)
         return table
 
+    def _make_incident_table(self):
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(["Prioridade", "Incidente", "De -> Para", "Possivel responsavel"])
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setCornerButtonEnabled(False)
+        self._configure_responsive_table(table, 100)
+        table.verticalHeader().setDefaultSectionSize(32)
+        table.itemSelectionChanged.connect(self._on_finding_selected)
+        return table
+
     def _make_rtp_table(self):
-        table = QTableWidget(0, 6)
+        table = QTableWidget(0, 7)
         table.setHorizontalHeaderLabels(
-            ["Origem", "Destino", "SSRC", "Pacotes", "Loss", "Jitter (ms)"]
+            ["Origem", "Destino", "SSRC", "Codecs", "Pacotes", "Loss", "Jitter (ms)"]
         )
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1355,6 +1442,13 @@ class SipperWindow(QMainWindow):
             self._finding_key(self.last_viewmodel["findings"][0], 0) if self.last_viewmodel["findings"] else None
         )
         self._render_all()
+        if any(
+            finding["severity"] in {"high", "medium"}
+            for finding in self.last_viewmodel["findings"]
+        ):
+            self._set_page("Diagnostico")
+        else:
+            self._set_page("Resumo")
         self.export_button.setEnabled(True)
         self._set_analysis_running(False)
         self._set_status("Analise concluida com sucesso")
@@ -1456,6 +1550,10 @@ class SipperWindow(QMainWindow):
         self._select_filter_value(self.network_filter, filter_name)
         self._set_page("Rede")
 
+    def _set_security_filter(self, filter_name):
+        self._select_filter_value(self.security_filter, filter_name)
+        self._set_page("Seguranca")
+
     def _select_filter_value(self, combo_box, value):
         for index in range(combo_box.count()):
             if combo_box.itemData(index) == value:
@@ -1477,6 +1575,11 @@ class SipperWindow(QMainWindow):
         if self.pages.currentWidget() is self.page_widgets.get("Rede"):
             self._refresh_nav_state("Rede")
 
+    def _on_security_filter_changed(self):
+        self._render_security_page()
+        if self.pages.currentWidget() is self.page_widgets.get("Seguranca"):
+            self._refresh_nav_state("Seguranca")
+
     def _refresh_nav_state(self, current):
         for name, button in self.page_buttons.items():
             button.setProperty("active", name == current)
@@ -1486,6 +1589,7 @@ class SipperWindow(QMainWindow):
         self._refresh_filter_nav_buttons("RTP", self.rtp_nav_buttons, self.rtp_filter, current)
         self._refresh_filter_nav_buttons("SIP", self.sip_nav_buttons, self.sip_filter, current)
         self._refresh_filter_nav_buttons("Rede", self.network_nav_buttons, self.network_filter, current)
+        self._refresh_filter_nav_buttons("Seguranca", self.security_nav_buttons, self.security_filter, current)
 
     def _refresh_filter_nav_buttons(self, page, buttons, combo_box, current_page):
         current_filter = combo_box.currentData()
@@ -1713,13 +1817,57 @@ class SipperWindow(QMainWindow):
     def _render_all(self):
         self._refresh_nav_state(self.page_badge.text())
         self._render_summary_page()
+        self._render_diagnostic_page()
         self._render_sip_page()
         self._render_rtp_page()
         self._render_network_page()
+        self._render_security_page()
         self._render_findings_page()
         self._render_statistics_page()
         self._render_settings_page()
         self._render_about_page()
+
+    def _render_diagnostic_page(self):
+        if self.last_viewmodel is None:
+            self.diagnostic_priority_text.setPlainText("Abra um PCAP para priorizar incidentes.")
+            self.diagnostic_scope_text.setPlainText("Nenhum diagnostico carregado.")
+            self.diagnostic_detail_text.setPlainText("Selecione um incidente para ver as evidencias.")
+            self._fill_incident_table(self.diagnostic_incidents_table, [])
+            return
+
+        severity_rank = {"high": 0, "medium": 1, "low": 2}
+        incidents = sorted(
+            self.last_viewmodel["findings"],
+            key=lambda finding: (severity_rank.get(finding["severity"], 3), finding["type"]),
+        )
+        actionable = [finding for finding in incidents if finding["severity"] in {"high", "medium"}]
+        top = actionable[0] if actionable else (incidents[0] if incidents else None)
+        if top is None:
+            self.diagnostic_priority_text.setPlainText("Nenhum problema detectado na captura.")
+        else:
+            self.diagnostic_priority_text.setPlainText(
+                "\n".join(
+                    [
+                        f"Incidente: {top['type']}",
+                        f"Prioridade: {top['severity'].upper()}",
+                        f"De: {top['source']}",
+                        f"Para: {top['destination']}",
+                        f"Possivel responsavel: {top['responsibility']}",
+                    ]
+                )
+            )
+        self.diagnostic_scope_text.setPlainText(
+            "\n".join(
+                [
+                    f"Incidentes acionaveis: {len(actionable)}",
+                    f"Total de findings: {len(incidents)}",
+                    f"Camadas afetadas: {self._finding_category_summary(incidents)}",
+                    f"Atribuicao principal: {self._responsibility_summary(actionable or incidents)}",
+                ]
+            )
+        )
+        self._fill_incident_table(self.diagnostic_incidents_table, actionable or incidents)
+        self._render_diagnostic_detail(self._selected_finding(actionable or incidents))
 
     def _render_summary_page(self):
         if self.last_viewmodel is None:
@@ -1728,7 +1876,7 @@ class SipperWindow(QMainWindow):
                 widget.set_value(0)
             self._fill_calls_table(self.summary_calls_table, [])
             self._fill_rtp_table(self.summary_rtp_table, [])
-            self._fill_findings_table(self.summary_findings_table, [])
+            self._fill_incident_table(self.summary_findings_table, [])
             self.summary_protocol_chart.set_series([])
             self.summary_findings_chart.set_items([])
             self.summary_traffic_chart.set_data([], [])
@@ -1747,7 +1895,12 @@ class SipperWindow(QMainWindow):
             self.summary_rtp_table,
             viewmodel["rtp_streams"],
         )
-        self._fill_findings_table(self.summary_findings_table, viewmodel["findings"])
+        priority_findings = [
+            finding
+            for finding in viewmodel["findings"]
+            if finding["severity"] in {"high", "medium"}
+        ]
+        self._fill_incident_table(self.summary_findings_table, priority_findings[:6])
         self.summary_traffic_chart.set_data(self.last_traffic_series, self.last_traffic_labels)
         call = self._selected_call()
         self.summary_flow.set_call(call)
@@ -1842,6 +1995,15 @@ class SipperWindow(QMainWindow):
     def _filter_sip_findings(self, findings, filter_name):
         if filter_name == "errors":
             return [finding for finding in findings if finding["type"] != "sip_call_established"]
+        if filter_name == "headers":
+            return [
+                finding
+                for finding in findings
+                if any(
+                    token in finding["type"]
+                    for token in ("header", "content_length", "fragmentation")
+                )
+            ]
         return findings
 
     def _filter_calls_by_search(self, calls, all_calls, query, time_range):
@@ -1890,9 +2052,10 @@ class SipperWindow(QMainWindow):
 
     def _sip_filter_title(self, filter_name):
         titles = {
-            "all": "SIP Flows",
-            "errors": "SIP Errors",
-            "analysis": "Call Analysis",
+            "all": "Chamadas e sinalizacao",
+            "errors": "Falhas de sinalizacao",
+            "headers": "Headers SIP e MTU",
+            "analysis": "Analise da chamada",
         }
         return titles.get(filter_name, "SIP Flows")
 
@@ -1915,7 +2078,16 @@ class SipperWindow(QMainWindow):
         )
         self.rtp_streams.set_title(self._rtp_filter_title(filter_name))
         self._fill_rtp_table(self.rtp_streams_table, streams)
-        self.rtp_health_text.setPlainText("\n".join(self._finding_lines(rtp_findings, 12)) or "Nenhum finding RTP detectado.")
+        codec_summary = self._codec_summary(streams)
+        health_lines = [
+            f"Streams analisados: {len(streams)}",
+            f"Codecs usados: {codec_summary}",
+            "",
+            *self._finding_lines(rtp_findings, 10),
+        ]
+        self.rtp_health_text.setPlainText(
+            "\n".join(health_lines) if rtp_findings or streams else "Nenhum stream RTP detectado."
+        )
         self._fill_calls_table(self.rtp_calls_table, calls)
         call = self._selected_call()
         self.rtp_flow.set_call(call)
@@ -1959,13 +2131,26 @@ class SipperWindow(QMainWindow):
 
     def _rtp_filter_title(self, filter_name):
         titles = {
-            "all": "RTP Flows",
-            "jitter": "RTP - Jitter",
-            "loss": "RTP - Packet Loss",
-            "out_of_order": "RTP - Out-of-Order",
-            "codecs": "RTP - Codecs",
+            "all": "Streams RTP",
+            "jitter": "Midia com jitter",
+            "loss": "Midia com perda",
+            "out_of_order": "Midia fora de ordem",
+            "codecs": "Codecs identificados",
         }
         return titles.get(filter_name, "RTP Flows")
+
+    def _codec_summary(self, streams):
+        codec_counts = {}
+        for stream in streams:
+            codecs = stream.get("codec_guesses") or [
+                f"PT {payload_type}" for payload_type in stream.get("payload_types", [])
+            ]
+            for codec in codecs or ["Nao identificado"]:
+                codec_counts[codec] = codec_counts.get(codec, 0) + 1
+        return ", ".join(
+            f"{codec} ({count})"
+            for codec, count in sorted(codec_counts.items(), key=lambda item: (-item[1], item[0]))
+        ) or "Nenhum"
 
     def _render_network_page(self):
         if self.last_viewmodel is None:
@@ -1999,12 +2184,81 @@ class SipperWindow(QMainWindow):
 
     def _network_filter_title(self, filter_name):
         titles = {
-            "all": "Eventos TCP UDP ICMP",
-            "tcp": "TCP Flows",
-            "udp": "UDP Flows",
-            "icmp": "ICMP Flows",
+            "all": "Eventos de rede",
+            "tcp": "Eventos TCP",
+            "udp": "Eventos UDP",
+            "icmp": "Eventos ICMP",
         }
         return titles.get(filter_name, "Eventos TCP UDP ICMP")
+
+    def _render_security_page(self):
+        if self.last_viewmodel is None:
+            self.security_tls_text.setPlainText("Abra um PCAP para analisar TLS.")
+            self.security_fragmentation_text.setPlainText("Abra um PCAP para analisar fragmentacao e MTU.")
+            self.security_detail_text.setPlainText("Sem finding selecionado.")
+            self._fill_findings_table(self.security_events_table, [])
+            return
+
+        findings = self.last_viewmodel["findings"]
+        tls_findings = [finding for finding in findings if finding["type"].startswith("tls_")]
+        fragmentation_findings = [
+            finding
+            for finding in findings
+            if finding["type"].startswith("ip_fragment")
+            or finding["type"] == "icmp_fragmentation_needed"
+            or "fragmentation" in finding["type"]
+        ]
+        filter_name = self.security_filter.currentData()
+        filtered_findings = self._filter_security_findings(
+            tls_findings,
+            fragmentation_findings,
+            filter_name,
+        )
+        filtered_findings = self._filter_findings_by_search(
+            filtered_findings,
+            self.security_search.text(),
+        )
+        self.security_events.set_title(self._security_filter_title(filter_name))
+        self.security_tls_text.setPlainText(
+            "\n".join(
+                [
+                    f"Eventos TLS: {len(tls_findings)}",
+                    f"Alertas fatais: {sum(1 for finding in tls_findings if finding['type'] == 'tls_fatal_alert')}",
+                    f"Handshake sem resposta: {sum(1 for finding in tls_findings if finding['type'] == 'tls_client_hello_no_response')}",
+                    f"Versao legada: {sum(1 for finding in tls_findings if finding['type'] == 'tls_legacy_version')}",
+                ]
+            )
+        )
+        self.security_fragmentation_text.setPlainText(
+            "\n".join(
+                [
+                    f"Eventos de fragmentacao: {len(fragmentation_findings)}",
+                    f"Conjuntos incompletos: {sum(1 for finding in fragmentation_findings if finding['type'] == 'ip_fragment_incomplete')}",
+                    f"Sobreposicoes: {sum(1 for finding in fragmentation_findings if finding['type'] == 'ip_fragment_overlap')}",
+                    f"Risco em headers SIP: {sum(1 for finding in fragmentation_findings if finding['type'] == 'sip_header_fragmentation_risk')}",
+                ]
+            )
+        )
+        self._fill_findings_table(self.security_events_table, filtered_findings)
+        self._render_finding_text(
+            self.security_detail_text,
+            self._selected_finding(filtered_findings),
+        )
+
+    def _filter_security_findings(self, tls_findings, fragmentation_findings, filter_name):
+        if filter_name == "tls":
+            return tls_findings
+        if filter_name == "fragmentation":
+            return fragmentation_findings
+        return tls_findings + fragmentation_findings
+
+    def _security_filter_title(self, filter_name):
+        titles = {
+            "all": "Eventos TLS e Fragmentacao",
+            "tls": "Eventos TLS",
+            "fragmentation": "Fragmentacao e MTU",
+        }
+        return titles.get(filter_name, "Eventos TLS e Fragmentacao")
 
     def _render_findings_page(self):
         if self.last_viewmodel is None:
@@ -2026,6 +2280,7 @@ class SipperWindow(QMainWindow):
                     f"High: {self.last_viewmodel['severity_counts']['high']}",
                     f"Medium: {self.last_viewmodel['severity_counts']['medium']}",
                     f"Low: {self.last_viewmodel['severity_counts']['low']}",
+                    f"Camadas afetadas: {self._finding_category_summary(findings)}",
                 ]
             )
         )
@@ -2240,11 +2495,40 @@ class SipperWindow(QMainWindow):
         table.setRowCount(len(findings))
         for row, finding in enumerate(findings):
             key = self._finding_key(finding, row)
-            values = [finding["severity"], finding["type"], finding["source"], finding["destination"]]
+            values = [
+                finding["severity"],
+                finding.get("category", "Correlacao"),
+                finding["type"],
+                finding["source"],
+                finding["destination"],
+            ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, key)
                 item.setToolTip(str(value))
+                if column == 0:
+                    item.setBackground(QColor(self._severity_color(finding["severity"], palette)))
+                    item.setForeground(QColor(palette["text"]))
+                table.setItem(row, column, item)
+        self._restore_finding_selection(table)
+        table.blockSignals(False)
+
+    def _fill_incident_table(self, table, findings):
+        palette = THEMES[self.current_theme]
+        table.blockSignals(True)
+        table.setRowCount(len(findings))
+        for row, finding in enumerate(findings):
+            key = self._finding_key(finding, row)
+            values = [
+                finding["severity"].upper(),
+                finding["type"],
+                f"{finding['source']} -> {finding['destination']}",
+                finding.get("responsibility", "Em investigacao"),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, key)
+                item.setToolTip(value)
                 if column == 0:
                     item.setBackground(QColor(self._severity_color(finding["severity"], palette)))
                     item.setForeground(QColor(palette["text"]))
@@ -2259,6 +2543,7 @@ class SipperWindow(QMainWindow):
                 stream["source"],
                 stream["destination"],
                 f"0x{stream['ssrc']:08X}",
+                self._format_stream_codecs(stream),
                 str(stream["packet_count"]),
                 f"{stream['loss_percent']:.2f}% ({stream['lost_packets']})",
                 f"{stream['average_jitter'] * 1000:.1f}",
@@ -2267,6 +2552,15 @@ class SipperWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 table.setItem(row, column, item)
+
+    def _format_stream_codecs(self, stream):
+        codecs = list(stream.get("codec_guesses", []))
+        payload_types = stream.get("payload_types", [])
+        if codecs:
+            return ", ".join(codecs)
+        if payload_types:
+            return ", ".join(f"PT {payload_type}" for payload_type in payload_types)
+        return "Nao identificado"
 
     def _restore_call_selection(self, table):
         if self.selected_call_id is None:
@@ -2327,6 +2621,8 @@ class SipperWindow(QMainWindow):
             finding = self._selected_finding(self.last_viewmodel["findings"])
         self._render_finding_text(self.network_detail_text, finding)
         self._render_finding_text(self.findings_detail_text, finding)
+        self._render_finding_text(self.security_detail_text, finding)
+        self._render_diagnostic_detail(finding)
         if finding is not None:
             self.findings_recommendation_text.setPlainText(finding["recommendation"] or "Sem recomendacao.")
 
@@ -2537,11 +2833,41 @@ class SipperWindow(QMainWindow):
             """
         )
 
+    def _render_diagnostic_detail(self, finding):
+        if finding is None:
+            self.diagnostic_detail_text.setPlainText("Selecione um incidente para ver as evidencias.")
+            return
+
+        evidence = finding.get("evidence", [])
+        lines = [
+            f"Falha: {finding['type']}",
+            f"Camada: {finding.get('category', 'Correlacao')}",
+            f"De: {finding['source']}",
+            f"Para: {finding['destination']}",
+            f"Possivel responsavel: {finding.get('responsibility', 'Em investigacao')}",
+            f"Confianca da atribuicao: {finding.get('responsibility_confidence', 'low').upper()}",
+            "",
+            "Por que:",
+            finding.get("responsibility_reason", "Sem atribuicao conclusiva."),
+            "",
+            "Evidencias:",
+            *(f"- {item}" for item in evidence[:6]),
+            "",
+            "Proxima acao:",
+            finding["recommendation"] or "Investigue o fluxo entre os endpoints.",
+        ]
+        self.diagnostic_detail_text.setPlainText("\n".join(lines))
+
     def _render_finding_text(self, widget, finding):
         if finding is None:
             widget.setPlainText("Nenhum finding selecionado.")
             return
         palette = THEMES[self.current_theme]
+        evidence = finding.get("evidence", [])
+        evidence_html = "".join(
+            f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>"
+            for item in evidence
+        ) or "<li>Sem evidencias adicionais.</li>"
         widget.setHtml(
             f"""
             <div style="font-family:'Segoe UI'; color:{palette['text']};">
@@ -2551,10 +2877,18 @@ class SipperWindow(QMainWindow):
                 </div>
                 <div style="margin-bottom:8px;"><b>Origem:</b> {self._escape_html(finding['source'])}</div>
                 <div style="margin-bottom:12px;"><b>Destino:</b> {self._escape_html(finding['destination'])}</div>
+                <div style="margin-bottom:12px;"><b>Camada responsavel:</b> {self._escape_html(finding.get('category', 'Correlacao'))}</div>
+                <div style="margin-bottom:8px;"><b>Possivel responsavel:</b> {self._escape_html(finding.get('responsibility', 'Em investigacao'))}</div>
+                <div style="margin-bottom:12px;"><b>Confianca da atribuicao:</b> {self._escape_html(finding.get('responsibility_confidence', 'low').upper())}</div>
+                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
+                    {self._escape_html(finding.get('responsibility_reason', 'Sem atribuicao conclusiva.'))}
+                </div>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Descricao</div>
                 <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
                     {self._escape_html(finding["description"] or "-")}
                 </div>
+                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Evidencias principais</div>
+                <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{evidence_html}</ul>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Recomendacao</div>
                 <div style="padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
                     {self._escape_html(finding["recommendation"] or "-")}
@@ -2565,12 +2899,32 @@ class SipperWindow(QMainWindow):
 
     def _finding_lines(self, findings, limit):
         return [
-            f"{finding['severity'].upper()} | {finding['type']} | {finding['source']} -> {finding['destination']}"
+            f"{finding['severity'].upper()} | {finding.get('category', 'Correlacao')} | {finding['type']}"
             for finding in findings[:limit]
         ]
 
+    def _finding_category_summary(self, findings):
+        counts = {}
+        for finding in findings:
+            category = finding.get("category", "Correlacao")
+            counts[category] = counts.get(category, 0) + 1
+        return ", ".join(
+            f"{category} ({count})"
+            for category, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ) or "Nenhuma"
+
+    def _responsibility_summary(self, findings):
+        counts = {}
+        for finding in findings:
+            responsibility = finding.get("responsibility", "Em investigacao")
+            counts[responsibility] = counts.get(responsibility, 0) + 1
+        return ", ".join(
+            f"{responsibility} ({count})"
+            for responsibility, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ) or "Nenhuma"
+
     def _finding_key(self, finding, index):
-        return f"{index}:{finding['type']}:{finding['source']}:{finding['destination']}"
+        return finding.get("key", f"{index}:{finding['type']}:{finding['source']}:{finding['destination']}")
 
     def _set_status(self, text):
         self.sidebar_status.setText(text)
@@ -2598,9 +2952,11 @@ class SipperWindow(QMainWindow):
     def _page_icon(self, page):
         icon_map = {
             "Resumo": QStyle.SP_ComputerIcon,
+            "Diagnostico": QStyle.SP_MessageBoxWarning,
             "SIP": QStyle.SP_DialogYesButton,
             "RTP": QStyle.SP_MediaVolume,
             "Rede": QStyle.SP_DriveNetIcon,
+            "Seguranca": QStyle.SP_MessageBoxCritical,
             "Findings": QStyle.SP_MessageBoxWarning,
             "Estatisticas": QStyle.SP_FileDialogDetailedView,
             "Configuracoes": QStyle.SP_FileDialogContentsView,

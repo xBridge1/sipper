@@ -25,6 +25,69 @@ def test_parse_sip_invite_message():
     assert message.call_id == "call-123"
 
 
+def test_parse_sip_message_validates_header_structure_and_content_length():
+    packet = (
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: invalid-header-call\r\n"
+            b"BrokenHeader\r\n"
+            b"Content-Length: 8\r\n\r\n"
+            b"body"
+        )
+    )
+
+    message = parse_sip_message(packet)
+
+    assert message is not None
+    assert message.invalid_header_count == 1
+    assert message.content_length_mismatch is True
+
+
+def test_engine_detects_sip_header_validation_errors():
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: invalid-header-call\r\n"
+            b"BrokenHeader\r\n"
+            b"Content-Length: 8\r\n\r\n"
+            b"body"
+        )
+    ]
+
+    result = analyze_pcap(packets)
+    finding_types = {finding.type for finding in result["findings"]}
+
+    assert "sip_invalid_header" in finding_types
+    assert "sip_content_length_mismatch" in finding_types
+
+
+def test_engine_detects_sip_header_fragmentation_risk_from_total_header_size():
+    route_headers = b"".join(
+        f"Route: <sip:proxy-{index}@example.local>;lr\r\n".encode("ascii")
+        for index in range(40)
+    )
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: oversized-header-call\r\n"
+            + route_headers
+            + b"\r\n"
+        )
+    ]
+
+    result = analyze_pcap(packets)
+    finding_types = {finding.type for finding in result["findings"]}
+
+    assert "sip_large_header" in finding_types
+    assert "sip_header_fragmentation_risk" in finding_types
+
+
 def test_parse_sip_message_extracts_sdp_audio_media_and_codec():
     packet = (
         IP(src="192.168.1.10", dst="192.168.1.20")
@@ -179,6 +242,7 @@ def test_build_sip_flows_reassembles_tcp_segments_using_content_length():
     assert len(flows) == 1
     assert flows["tcp-segmented"].invites == 1
     assert flows["tcp-segmented"].messages[0].sdp_media[0].codecs == {8: "PCMA"}
+    assert flows["tcp-segmented"].tcp_segmented_messages == 1
 
 
 def test_build_sip_flows_tracks_ack_and_error_responses():
@@ -472,3 +536,46 @@ def test_engine_detects_sip_signaling_fragmentation_risk():
     finding_types = {finding.type for finding in result["findings"]}
 
     assert "sip_signaling_fragmentation" in finding_types
+
+
+def test_engine_detects_sip_udp_fragmentation_risk_from_message_size():
+    body = b"a" * 1250
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: udp-fragmentation-risk\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+    ]
+
+    result = analyze_pcap(packets)
+    finding_types = {finding.type for finding in result["findings"]}
+
+    assert "sip_udp_fragmentation_risk" in finding_types
+
+
+def test_sip_fragmentation_evidence_includes_related_ip_fragment_set():
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20", id=777, flags="MF")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"INVITE sip:100@pbx.local SIP/2.0\r\n"
+            b"Call-ID: fragmented-evidence\r\n"
+            b"CSeq: 1 INVITE\r\n\r\n"
+        ),
+        IP(src="192.168.1.10", dst="192.168.1.20", id=777, proto=17, frag=8) / b"trailing-data",
+    ]
+
+    result = analyze_pcap(packets)
+    finding = next(
+        finding
+        for finding in result["findings"]
+        if finding.type == "sip_signaling_fragmentation"
+    )
+
+    assert "Related IP fragment sets: 1" in finding.evidence
+    fragment_group = next(iter(result["fragment_groups"].values()))
+    assert (fragment_group.source_port, fragment_group.destination_port) == (5060, 5060)

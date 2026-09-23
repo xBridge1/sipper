@@ -62,8 +62,8 @@ def detect_sip_error_responses(flows):
                 type="sip_error_response",
                 severity="high",
                 confidence=0.95,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=first_error.source_ip,
+                destination_ip=first_error.destination_ip,
                 description="SIP call setup received an error response.",
                 evidence=[
                     f"Call-ID: {flow.call_id}",
@@ -235,6 +235,7 @@ def detect_sip_large_headers(flows):
                 evidence=[
                     f"Call-ID: {flow.call_id}",
                     f"Messages with large headers: {flow.large_header_messages}",
+                    f"Header fragmentation risks: {flow.header_fragmentation_risk_messages}",
                 ],
                 recommendation=(
                     "Check whether SIP headers are oversized due to excessive routing, "
@@ -246,11 +247,121 @@ def detect_sip_large_headers(flows):
     return findings
 
 
-def detect_sip_signaling_fragmentation(flows):
+def detect_sip_header_validation_errors(flows):
     findings = []
 
     for flow in flows.values():
-        if flow.fragmented_messages == 0:
+        if flow.invalid_header_messages > 0:
+            findings.append(
+                Finding(
+                    type="sip_invalid_header",
+                    severity="medium",
+                    confidence=0.95,
+                    source_ip=flow.source_ip,
+                    destination_ip=flow.destination_ip,
+                    description="SIP messages contain malformed header lines.",
+                    evidence=[
+                        f"Call-ID: {flow.call_id}",
+                        f"Messages with invalid headers: {flow.invalid_header_messages}",
+                    ],
+                    recommendation=(
+                        "Check SIP message generation and any SBC, proxy, or inspection device "
+                        "that may be rewriting headers."
+                    ),
+                )
+            )
+
+        if flow.content_length_mismatches > 0:
+            findings.append(
+                Finding(
+                    type="sip_content_length_mismatch",
+                    severity="high",
+                    confidence=0.95,
+                    source_ip=flow.source_ip,
+                    destination_ip=flow.destination_ip,
+                    description="SIP Content-Length does not match the message body size.",
+                    evidence=[
+                        f"Call-ID: {flow.call_id}",
+                        f"Content-Length mismatches: {flow.content_length_mismatches}",
+                    ],
+                    recommendation=(
+                        "Correct the SIP message generator or intermediary rewriting the body. "
+                        "A mismatched Content-Length can break parsing and TCP stream reassembly."
+                    ),
+                )
+            )
+
+    return findings
+
+
+def detect_sip_header_fragmentation_risk(flows):
+    findings = []
+
+    for flow in flows.values():
+        if flow.header_fragmentation_risk_messages == 0:
+            continue
+
+        findings.append(
+            Finding(
+                type="sip_header_fragmentation_risk",
+                severity="high",
+                confidence=0.90,
+                source_ip=flow.source_ip,
+                destination_ip=flow.destination_ip,
+                description="SIP header block size creates a high risk of IP fragmentation.",
+                evidence=[
+                    f"Call-ID: {flow.call_id}",
+                    f"Oversized header blocks: {flow.header_fragmentation_risk_messages}",
+                    "Header threshold: 1200 bytes",
+                ],
+                recommendation=(
+                    "Reduce oversized Via, Route, Record-Route, Contact, and identity headers, "
+                    "or use TCP/TLS transport where appropriate."
+                ),
+            )
+        )
+
+    return findings
+
+
+def detect_sip_udp_fragmentation_risk(flows):
+    findings = []
+
+    for flow in flows.values():
+        if flow.udp_fragmentation_risk_messages == 0:
+            continue
+
+        findings.append(
+            Finding(
+                type="sip_udp_fragmentation_risk",
+                severity="medium",
+                confidence=0.90,
+                source_ip=flow.source_ip,
+                destination_ip=flow.destination_ip,
+                description="SIP messages over UDP exceed the safe 1200-byte MTU budget.",
+                evidence=[
+                    f"Call-ID: {flow.call_id}",
+                    f"Oversized SIP/UDP messages: {flow.udp_fragmentation_risk_messages}",
+                    "Safe message threshold: 1200 bytes",
+                ],
+                recommendation=(
+                    "Reduce SIP message size or use TCP/TLS where supported. UDP packets above "
+                    "the path MTU can be fragmented or silently dropped."
+                ),
+            )
+        )
+
+    return findings
+
+
+def detect_sip_signaling_fragmentation(flows, fragment_groups=None):
+    findings = []
+    fragment_groups = fragment_groups or {}
+
+    for flow in flows.values():
+        related_groups = _find_related_fragment_groups(flow, fragment_groups)
+
+        if flow.fragmented_messages == 0 and not related_groups:
             continue
 
         findings.append(
@@ -264,6 +375,8 @@ def detect_sip_signaling_fragmentation(flows):
                 evidence=[
                     f"Call-ID: {flow.call_id}",
                     f"Fragmented SIP messages: {flow.fragmented_messages}",
+                    f"Related IP fragment sets: {len(related_groups)}",
+                    f"TCP-segmented SIP messages: {flow.tcp_segmented_messages}",
                 ],
                 recommendation=(
                     "Check MTU, transport choice, and SIP message size. Fragmented "
@@ -273,3 +386,29 @@ def detect_sip_signaling_fragmentation(flows):
         )
 
     return findings
+
+
+def _find_related_fragment_groups(flow, fragment_groups):
+    return [
+        group
+        for group in fragment_groups.values()
+        if any(_fragment_group_matches_message(group, message) for message in flow.messages)
+    ]
+
+
+def _fragment_group_matches_message(group, message):
+    protocol = 17 if message.transport == "UDP" else 6 if message.transport == "TCP" else None
+
+    if protocol is None or group.protocol != protocol:
+        return False
+
+    if (group.source_ip, group.destination_ip) != (message.source_ip, message.destination_ip):
+        return False
+
+    if group.source_port is None:
+        return message.is_fragmented
+
+    return (group.source_port, group.destination_port) == (
+        message.source_port,
+        message.destination_port,
+    )

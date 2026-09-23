@@ -2,7 +2,12 @@ from dataclasses import dataclass, field
 
 from scapy.packet import Raw
 from scapy.layers.inet import IP, TCP, UDP
-from scapy.layers.inet6 import IPv6
+from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment
+
+
+SIP_LARGE_HEADER_LINE_BYTES = 1024
+SIP_FRAGMENTATION_RISK_HEADER_BYTES = 1200
+SIP_UDP_FRAGMENTATION_RISK_BYTES = 1200
 
 
 @dataclass
@@ -21,6 +26,12 @@ class SIPMessage:
     max_header_length: int
     is_fragmented: bool
     packet_time: float
+    header_size: int = 0
+    message_size: int = 0
+    transport: str = ""
+    tcp_segmented: bool = False
+    invalid_header_count: int = 0
+    content_length_mismatch: bool = False
     sdp_media: list["SDPMediaDescription"] = field(default_factory=list)
     cseq_method: str | None = None
     from_tag: str | None = None
@@ -58,7 +69,12 @@ class SIPFlow:
     success_responses: int = 0
     error_responses: int = 0
     large_header_messages: int = 0
+    header_fragmentation_risk_messages: int = 0
+    invalid_header_messages: int = 0
+    content_length_mismatches: int = 0
     fragmented_messages: int = 0
+    udp_fragmentation_risk_messages: int = 0
+    tcp_segmented_messages: int = 0
     registers: int = 0
 
 
@@ -69,7 +85,7 @@ def parse_sip_message(packet):
         return None
 
     source_ip, destination_ip, source_port, destination_port = _extract_endpoints(packet)
-    is_fragmented = bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
+    transport = "UDP" if UDP in packet else "TCP" if TCP in packet else ""
 
     return _parse_sip_payload(
         payload,
@@ -77,8 +93,9 @@ def parse_sip_message(packet):
         destination_ip,
         source_port,
         destination_port,
-        is_fragmented,
+        _is_ip_fragmented(packet),
         float(packet.time),
+        transport,
     )
 
 
@@ -90,6 +107,8 @@ def _parse_sip_payload(
     destination_port,
     is_fragmented,
     packet_time,
+    transport="",
+    tcp_segmented=False,
 ):
 
     try:
@@ -97,7 +116,9 @@ def _parse_sip_payload(
     except UnicodeDecodeError:
         return None
 
-    lines = text.splitlines()
+    header_bytes, body_bytes = _split_sip_payload(payload)
+    header_text = header_bytes.decode("utf-8", errors="ignore")
+    lines = header_text.splitlines()
 
     if not lines:
         return None
@@ -110,6 +131,8 @@ def _parse_sip_payload(
     headers = {}
     header_count = 0
     max_header_length = 0
+    invalid_header_count = 0
+    declared_content_length = None
 
     previous_header = None
 
@@ -120,15 +143,33 @@ def _parse_sip_payload(
 
         line = raw_line.strip()
 
-        if not line or ":" not in line:
+        if not line:
+            continue
+
+        if ":" not in line:
+            invalid_header_count += 1
+            previous_header = None
             continue
 
         name, value = line.split(":", 1)
         header_name = _normalize_header_name(name)
+        if not header_name:
+            invalid_header_count += 1
+            previous_header = None
+            continue
         headers[header_name] = value.strip()
         previous_header = header_name
         header_count += 1
         max_header_length = max(max_header_length, len(line.encode("utf-8")))
+        if header_name == "content-length":
+            if value.strip().isdigit():
+                declared_content_length = int(value.strip())
+            else:
+                invalid_header_count += 1
+
+    content_length_mismatch = (
+        declared_content_length is not None and declared_content_length != len(body_bytes)
+    )
 
     call_id = headers.get("call-id")
 
@@ -162,6 +203,12 @@ def _parse_sip_payload(
             max_header_length=max_header_length,
             is_fragmented=is_fragmented,
             packet_time=packet_time,
+            header_size=len(header_bytes),
+            message_size=len(payload),
+            transport=transport,
+            tcp_segmented=tcp_segmented,
+            invalid_header_count=invalid_header_count,
+            content_length_mismatch=content_length_mismatch,
             sdp_media=sdp_media,
             cseq_method=cseq_method,
             from_tag=from_tag,
@@ -190,6 +237,12 @@ def _parse_sip_payload(
         max_header_length=max_header_length,
         is_fragmented=is_fragmented,
         packet_time=packet_time,
+        header_size=len(header_bytes),
+        message_size=len(payload),
+        transport=transport,
+        tcp_segmented=tcp_segmented,
+        invalid_header_count=invalid_header_count,
+        content_length_mismatch=content_length_mismatch,
         sdp_media=sdp_media,
         cseq_method=cseq_method,
         from_tag=from_tag,
@@ -224,14 +277,18 @@ def _extract_tcp_sip_messages(packet, tcp_buffers):
 
     source_ip, destination_ip, source_port, destination_port = _extract_endpoints(packet)
     key = (source_ip, destination_ip, source_port, destination_port)
-    state = tcp_buffers.setdefault(key, {"payload": b"", "packet_time": None, "fragmented": False})
+    state = tcp_buffers.setdefault(
+        key,
+        {"payload": b"", "packet_time": None, "fragmented": False, "segment_count": 0},
+    )
 
     if not state["payload"]:
         state["packet_time"] = float(packet.time)
-        state["fragmented"] = bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
+        state["fragmented"] = _is_ip_fragmented(packet)
 
     state["payload"] += payload
-    state["fragmented"] = state["fragmented"] or bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
+    state["segment_count"] += 1
+    state["fragmented"] = state["fragmented"] or _is_ip_fragmented(packet)
     messages = []
 
     while True:
@@ -248,6 +305,8 @@ def _extract_tcp_sip_messages(packet, tcp_buffers):
             destination_port,
             state["fragmented"],
             state["packet_time"],
+            "TCP",
+            state["segment_count"] > 1,
         )
 
         if message is not None:
@@ -255,7 +314,10 @@ def _extract_tcp_sip_messages(packet, tcp_buffers):
 
         if state["payload"]:
             state["packet_time"] = float(packet.time)
-            state["fragmented"] = bool(IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
+            state["fragmented"] = _is_ip_fragmented(packet)
+            state["segment_count"] = 1
+        else:
+            state["segment_count"] = 0
 
     return messages
 
@@ -330,11 +392,36 @@ def _add_message_to_flow(flows, message):
         elif 400 <= message.status_code < 700:
             flow.error_responses += 1
 
-    if message.max_header_length > 1024:
+    if (
+        message.max_header_length > SIP_LARGE_HEADER_LINE_BYTES
+        or message.header_size > SIP_FRAGMENTATION_RISK_HEADER_BYTES
+    ):
         flow.large_header_messages += 1
+
+    if message.header_size > SIP_FRAGMENTATION_RISK_HEADER_BYTES:
+        flow.header_fragmentation_risk_messages += 1
+
+    if message.invalid_header_count > 0:
+        flow.invalid_header_messages += 1
+
+    if message.content_length_mismatch:
+        flow.content_length_mismatches += 1
 
     if message.is_fragmented:
         flow.fragmented_messages += 1
+
+    if message.transport == "UDP" and message.message_size > SIP_UDP_FRAGMENTATION_RISK_BYTES:
+        flow.udp_fragmentation_risk_messages += 1
+
+    if message.tcp_segmented:
+        flow.tcp_segmented_messages += 1
+
+
+def _is_ip_fragmented(packet):
+    return bool(
+        (IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
+        or IPv6ExtHdrFragment in packet
+    )
 
 
 def _extract_payload(packet):
@@ -342,6 +429,20 @@ def _extract_payload(packet):
         return bytes(packet[Raw].load)
 
     return b""
+
+
+def _split_sip_payload(payload):
+    marker = b"\r\n\r\n"
+    marker_index = payload.find(marker)
+    if marker_index >= 0:
+        return payload[:marker_index], payload[marker_index + len(marker):]
+
+    marker = b"\n\n"
+    marker_index = payload.find(marker)
+    if marker_index >= 0:
+        return payload[:marker_index], payload[marker_index + len(marker):]
+
+    return payload, b""
 
 
 def _parse_sdp_media(text):
