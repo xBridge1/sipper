@@ -61,6 +61,13 @@ def test_parse_rtp_packet_accepts_dynamic_payload_type():
     assert parsed.payload_type == 111
 
 
+def test_parse_rtp_packet_ignores_rtcp_packets():
+    rtcp_sender_report = b"\x80\xc8" + (b"\x00" * 26)
+    packet = IP(src="10.0.0.1", dst="10.0.0.2") / UDP(sport=4001, dport=4003) / rtcp_sender_report
+
+    assert parse_rtp_packet(packet) is None
+
+
 def test_parse_rtp_packet_handles_csrc_extension_and_padding():
     header = bytes(
         [

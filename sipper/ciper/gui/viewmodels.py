@@ -27,6 +27,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "description": finding.description,
                 "recommendation": finding.recommendation,
                 "evidence": list(getattr(finding, "evidence", [])),
+                "references": list(getattr(finding, "references", [])),
                 "category": _finding_category(finding.type),
                 "responsibility": describe_responsibility(finding)[0],
                 "responsibility_confidence": describe_responsibility(finding)[1],

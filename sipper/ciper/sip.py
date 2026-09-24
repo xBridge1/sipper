@@ -27,6 +27,7 @@ class SIPMessage:
     is_fragmented: bool
     packet_time: float
     header_size: int = 0
+    header_text: str = ""
     message_size: int = 0
     transport: str = ""
     tcp_segmented: bool = False
@@ -204,6 +205,7 @@ def _parse_sip_payload(
             is_fragmented=is_fragmented,
             packet_time=packet_time,
             header_size=len(header_bytes),
+            header_text=header_text,
             message_size=len(payload),
             transport=transport,
             tcp_segmented=tcp_segmented,
@@ -238,6 +240,7 @@ def _parse_sip_payload(
         is_fragmented=is_fragmented,
         packet_time=packet_time,
         header_size=len(header_bytes),
+        header_text=header_text,
         message_size=len(payload),
         transport=transport,
         tcp_segmented=tcp_segmented,

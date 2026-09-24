@@ -99,6 +99,9 @@ def parse_rtp_packet(packet):
     if version != 2:
         return None
 
+    if 192 <= payload[1] <= 223:
+        return None
+
     payload_type = payload[1] & 0x7F
     csrc_count = payload[0] & 0x0F
     has_extension = bool(payload[0] & 0x10)

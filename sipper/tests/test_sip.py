@@ -23,6 +23,7 @@ def test_parse_sip_invite_message():
     assert message.is_request is True
     assert message.method == "INVITE"
     assert message.call_id == "call-123"
+    assert "Call-ID: call-123" in message.header_text
 
 
 def test_parse_sip_message_validates_header_structure_and_content_length():

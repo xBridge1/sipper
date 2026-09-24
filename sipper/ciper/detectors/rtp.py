@@ -1,4 +1,5 @@
 from ciper.findings import Finding
+from ciper.voip_quality import jitter_observation, packet_loss_observation
 
 
 def detect_rtp_packet_loss(streams, high_loss_threshold=2):
@@ -6,6 +7,8 @@ def detect_rtp_packet_loss(streams, high_loss_threshold=2):
     for stream in streams.values():
         if stream.lost_packets == 0:
             continue
+        expected_packets = stream.packet_count + stream.lost_packets
+        loss_percent = stream.lost_packets / expected_packets * 100 if expected_packets else 0.0
         findings.append(
             Finding(
                 type="rtp_packet_loss",
@@ -18,6 +21,7 @@ def detect_rtp_packet_loss(streams, high_loss_threshold=2):
                     f"SSRC: {stream.ssrc}",
                     f"Lost packets: {stream.lost_packets}",
                     f"Packets observed: {stream.packet_count}",
+                    packet_loss_observation(loss_percent),
                 ],
                 recommendation="Check congestion, packet drops, QoS, or unstable WAN/LAN links.",
             )
@@ -64,6 +68,7 @@ def detect_rtp_high_jitter(streams, threshold=0.04):
                 evidence=[
                     f"SSRC: {stream.ssrc}",
                     f"Max jitter: {stream.max_jitter:.3f}s",
+                    jitter_observation(stream.average_jitter, stream.max_jitter),
                 ],
                 recommendation="Check latency variation, queueing, wireless instability, or overloaded network paths.",
             )

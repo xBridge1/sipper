@@ -12,6 +12,7 @@ from scapy.layers.inet6 import IPv6ExtHdrFragment
 from ciper.detectors.fragmentation import detect_ip_fragmentation
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
 from ciper.findings import Finding
+from ciper.references import attach_references
 from ciper.detectors.icmp import (
     detect_icmp_no_response,
     detect_icmp_parameter_problem,
@@ -154,6 +155,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_icmp_unreachable(icmp_flows))
     findings.extend(detect_ip_fragmentation(fragment_groups))
     findings.extend(correlate_findings(findings, sip_flows, rtp_streams))
+    attach_references(findings)
     findings = prioritize_findings(findings)
     call_summaries = build_call_summaries(sip_flows, rtp_streams, findings)
 

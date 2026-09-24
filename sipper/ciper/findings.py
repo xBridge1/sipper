@@ -14,6 +14,7 @@ class Finding:
 
     evidence: list[str] = field(default_factory=list)
     recommendation: str = ""
+    references: list[dict[str, str]] = field(default_factory=list)
 
 
 def describe_responsibility(finding):

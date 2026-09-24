@@ -40,12 +40,14 @@ from ciper.analyzer import PacketAnalysisAccumulator
 from ciper.analysis_control import AnalysisCancelled, raise_if_cancelled
 from ciper.engine import analyze_pcap_file
 from ciper.gui.theme import FONTS, THEMES
+from ciper.gui.evidence import build_finding_evidence_context
 from ciper.gui.viewmodels import build_dashboard_viewmodel
 from ciper.reporting import build_report_payload, export_csv, export_json, export_pdf
 from ciper.resources import resource_path
 from ciper.rtp import parse_rtp_packet
 from ciper.settings import AnalysisSettings, load_settings, save_settings
 from ciper.sip import parse_sip_message
+from ciper.voip_quality import jitter_observation, packet_loss_observation, quality_reference_note
 from ciper.logging_setup import configure_logging
 from ciper.updater import CURRENT_VERSION, check_for_update
 from scapy.layers.inet import ICMP, IP, TCP, UDP
@@ -564,6 +566,8 @@ class TrafficChart(QWidget):
 
 
 class SIPLadderWidget(QWidget):
+    message_selected = Signal(int)
+
     def __init__(self):
         super().__init__()
         self.flow = None
@@ -658,6 +662,23 @@ class SIPLadderWidget(QWidget):
         if 200 <= message.status_code < 300:
             return "#22A06B"
         return "#E5484D"
+
+    def mousePressEvent(self, event):
+        if self.flow is None:
+            return
+
+        rect = self.rect().adjusted(24, 24, -24, -24)
+        first_message_y = rect.top() + 62
+        index = round((event.position().y() - first_message_y) / 44)
+
+        if 0 <= index < len(self.flow.messages):
+            message_y = first_message_y + (index * 44)
+            if abs(event.position().y() - message_y) <= 18:
+                self.message_selected.emit(index)
+                event.accept()
+                return
+
+        super().mousePressEvent(event)
 
 
 class SipperWindow(QMainWindow):
@@ -2646,13 +2667,34 @@ class SipperWindow(QMainWindow):
 
         ladder = SIPLadderWidget()
         ladder.set_flow(flow)
-        viewer = QTextEdit()
-        viewer.setReadOnly(True)
-        viewer.setAcceptRichText(True)
-        viewer.setFont(_font("body"))
-        viewer.setHtml(self._build_sip_flow_html(flow))
+        message_selector = QComboBox()
+        header_viewer = QTextEdit()
+        header_viewer.setReadOnly(True)
+        header_viewer.setFont(_font("body"))
+        header_viewer.setMinimumHeight(250)
+
+        for index, message in enumerate(flow.messages):
+            kind = message.method if message.is_request else f"{message.status_code} {message.reason_phrase or ''}".strip()
+            message_selector.addItem(
+                f"{message.packet_time:.3f} | {kind} | {message.source_ip} -> {message.destination_ip}",
+                index,
+            )
+
+        def show_header(selector_index):
+            message_index = message_selector.itemData(selector_index)
+            if message_index is None:
+                header_viewer.setPlainText("Nenhuma mensagem SIP selecionada.")
+                return
+            message = flow.messages[message_index]
+            header_viewer.setPlainText(message.header_text or message.start_line)
+
+        message_selector.currentIndexChanged.connect(show_header)
+        ladder.message_selected.connect(message_selector.setCurrentIndex)
+        show_header(message_selector.currentIndex())
         layout.addWidget(ladder, 1)
-        layout.addWidget(viewer)
+        layout.addWidget(QLabel("Clique em uma seta ou selecione a mensagem para ver o cabecalho SIP"))
+        layout.addWidget(message_selector)
+        layout.addWidget(header_viewer, 1)
 
         self._animate_widget(dialog, 0.0, 1.0, 180)
         dialog.exec()
@@ -2723,6 +2765,11 @@ class SipperWindow(QMainWindow):
         palette = THEMES[self.current_theme]
         evidence = call["key_evidence"] or ["Sem evidencias resumidas."]
         rtp_metrics = call["rtp_metrics"]
+        loss_observation = packet_loss_observation(rtp_metrics["loss_percent"])
+        jitter_observation_text = jitter_observation(
+            rtp_metrics["average_jitter"],
+            rtp_metrics["max_jitter"],
+        )
         timings = call.get("signaling_timings", {})
         direction_lines = [
             f"{direction}: {metric['packet_count']} pacotes, {metric['loss_percent']:.2f}% loss, {metric['max_jitter'] * 1000:.1f} ms jitter"
@@ -2759,6 +2806,12 @@ class SipperWindow(QMainWindow):
                 <div style="margin-bottom:8px;"><b>Jitter medio/maximo:</b> {rtp_metrics['average_jitter'] * 1000:.1f} / {rtp_metrics['max_jitter'] * 1000:.1f} ms</div>
                 <div style="margin-bottom:8px;"><b>Out-of-order:</b> {rtp_metrics['out_of_order_packets']}</div>
                 <div style="margin-bottom:14px;"><b>SSRC:</b> {self._escape_html(', '.join(str(ssrc) for ssrc in rtp_metrics['ssrcs']) or '-')}</div>
+                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Interpretacao de qualidade</div>
+                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
+                    <div style="margin-bottom:6px;">{self._escape_html(loss_observation)}</div>
+                    <div style="margin-bottom:6px;">{self._escape_html(jitter_observation_text)}</div>
+                    <div style="color:{palette['muted']};">{self._escape_html(quality_reference_note())}</div>
+                </div>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">RTP por direcao</div>
                 <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{direction_html}</ul>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Evidencias</div>
@@ -2839,6 +2892,8 @@ class SipperWindow(QMainWindow):
             return
 
         evidence = finding.get("evidence", [])
+        technical_context = build_finding_evidence_context(self.last_engine_result, finding)
+        references = finding.get("references", [])
         lines = [
             f"Falha: {finding['type']}",
             f"Camada: {finding.get('category', 'Correlacao')}",
@@ -2852,6 +2907,25 @@ class SipperWindow(QMainWindow):
             "",
             "Evidencias:",
             *(f"- {item}" for item in evidence[:6]),
+            *(
+                ["", "Analise tecnica:", *technical_context]
+                if technical_context
+                else []
+            ),
+            *(
+                [
+                    "",
+                    "Referencias tecnicas:",
+                    *(
+                        f"- {item['title']}\n"
+                        f"  Aplicacao: {item.get('scope', 'Referencia tecnica do protocolo.')}\n"
+                        f"  Fonte: {item['url']}"
+                        for item in references
+                    ),
+                ]
+                if references
+                else []
+            ),
             "",
             "Proxima acao:",
             finding["recommendation"] or "Investigue o fluxo entre os endpoints.",
@@ -2864,10 +2938,25 @@ class SipperWindow(QMainWindow):
             return
         palette = THEMES[self.current_theme]
         evidence = finding.get("evidence", [])
+        technical_context = build_finding_evidence_context(self.last_engine_result, finding)
         evidence_html = "".join(
             f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>"
             for item in evidence
         ) or "<li>Sem evidencias adicionais.</li>"
+        technical_context_html = "".join(
+            f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>"
+            for item in technical_context
+        ) or "<li>Sem correlacoes adicionais para este finding.</li>"
+        references_html = "".join(
+            f"<li style='list-style:none; margin:0 0 10px 0; padding:10px 12px; "
+            f"border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};'>"
+            f"<div style='font-weight:700; margin-bottom:5px;'>{self._escape_html(item['title'])}</div>"
+            f"<div style='margin-bottom:5px;'><b>Aplicacao:</b> "
+            f"{self._escape_html(item.get('scope', 'Referencia tecnica do protocolo.'))}</div>"
+            f"<div style='color:{palette['muted']};'><b>Fonte:</b> "
+            f"{self._escape_html(item['url'])}</div></li>"
+            for item in finding.get("references", [])
+        ) or "<li>Referencia tecnica nao cadastrada.</li>"
         widget.setHtml(
             f"""
             <div style="font-family:'Segoe UI'; color:{palette['text']};">
@@ -2889,6 +2978,10 @@ class SipperWindow(QMainWindow):
                 </div>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Evidencias principais</div>
                 <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{evidence_html}</ul>
+                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Contexto tecnico capturado</div>
+                <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{technical_context_html}</ul>
+                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Referencias tecnicas</div>
+                <ul style="margin:0 0 14px 0; padding:0;">{references_html}</ul>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Recomendacao</div>
                 <div style="padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
                     {self._escape_html(finding["recommendation"] or "-")}

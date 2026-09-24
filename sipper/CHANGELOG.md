@@ -2,6 +2,24 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [1.0.3] - 2026-09-24
+
+### Added
+
+- SIP Flow permite selecionar uma mensagem pela seta ou lista e visualizar seu cabecalho SIP original.
+- Findings exibem contexto tecnico correlacionado, incluindo sinalizacao SIP, SDP, streams RTP, SSRC, sequencias e picos de jitter.
+- Referencias tecnicas por finding, com RFCs e fonte operacional de QoS explicando a aplicacao de cada referencia.
+- Interpretacao de qualidade VoIP para perda e jitter, com faixas de alvo, atencao, degradacao e criticidade.
+
+### Changed
+
+- O diagnostico de jitter prioriza impacto, motivo do risco, fluxo afetado e pior pico observado em vez de listar todos os streams da chamada.
+- A evidencia RTP agora e filtrada pelo SSRC e direcao que dispararam o finding.
+
+### Fixed
+
+- Pacotes RTCP nao sao mais classificados como streams RTP, evitando evidencias e fluxos de midia incorretos.
+
 ## [1.0.2] - 2026-09-23
 
 ### Added
