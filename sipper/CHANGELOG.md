@@ -2,6 +2,35 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [1.0.4] - 2026-09-29
+
+### Added
+
+- Metricas de jitter RTP com suavizacao RFC 3550 e estimativa heuristica de MOS, indisponivel quando nao ha RTP.
+- Metadados TLS: SNI, versoes e cipher suites ofertadas e negociadas, alem de mensagens de certificado observadas.
+- Detector de cipher suites RC4/3DES e evidencias TLS no painel de seguranca.
+- Deteccao de falhas REGISTER, REFER e OPTIONS sem resposta; resumo de re-INVITE, hold e resume.
+- Gerador de PCAPs sinteticos para regressao de TCP, qualidade VoIP e TLS.
+- SHA-256 do instalador, indicacao de checksum no atualizador e suporte opcional a assinatura Authenticode.
+
+### Changed
+
+- Resumo da chamada diferencia jitter suavizado de pico de variacao e apresenta operacoes SIP.
+- Analise aceita geradores sem copia inicial e informa contadores de pacotes por protocolo.
+- Atribuicao e evidencias de falhas SIP/TLS mais contextualizadas.
+
+### Fixed
+
+- Remontagem TCP para SIP/TLS, validacao SIP e tratamento de fluxos IPv6.
+- Distincao estrutural de RTP/RTCP e correlacao SIP/RTP mais restrita.
+- Identificacao de dialogos SIP e propagacao da selecao correta na interface.
+- Remocao de implementacoes duplicadas e verificacao de erros nas etapas do build.
+
+### Validation
+
+- Suite automatizada com 140 testes passando.
+- MOS e heuristico; certificados TLS criptografados e qualidade percebida nao sao validados pela captura.
+
 ## [1.0.3] - 2026-09-24
 
 ### Added

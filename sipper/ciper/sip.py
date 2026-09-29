@@ -4,6 +4,8 @@ from scapy.packet import Raw
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment
 
+from ciper.tcp_reassembly import reassemble_tcp_payloads
+
 
 SIP_LARGE_HEADER_LINE_BYTES = 1024
 SIP_FRAGMENTATION_RISK_HEADER_BYTES = 1200
@@ -60,6 +62,7 @@ class SIPFlow:
     call_id: str
     source_ip: str
     destination_ip: str
+    dialog_key: str = ""
     messages: list[SIPMessage] = field(default_factory=list)
     invites: int = 0
     acknowledgements: int = 0
@@ -77,6 +80,12 @@ class SIPFlow:
     udp_fragmentation_risk_messages: int = 0
     tcp_segmented_messages: int = 0
     registers: int = 0
+    options: int = 0
+    refers: int = 0
+    reinvites: int = 0
+    hold_events: int = 0
+    resume_events: int = 0
+    media_on_hold: bool = False
 
 
 def parse_sip_message(packet):
@@ -186,7 +195,7 @@ def _parse_sip_payload(
     if start_line.startswith("SIP/2.0 "):
         parts = start_line.split(" ", 2)
 
-        if len(parts) < 3:
+        if len(parts) < 3 or not parts[1].isdigit():
             return None
 
         return SIPMessage(
@@ -257,41 +266,34 @@ def _parse_sip_payload(
 
 def build_sip_flows(packets):
     flows = {}
-    tcp_buffers = {}
+    initial_messages = {}
+    messages = []
+    tcp_packets = []
 
     for packet in packets:
         if TCP in packet:
-            messages = _extract_tcp_sip_messages(packet, tcp_buffers)
+            tcp_packets.append(packet)
         else:
             message = parse_sip_message(packet)
-            messages = [message] if message is not None else []
+            if message is not None:
+                messages.append(message)
 
-        for message in messages:
-            _add_message_to_flow(flows, message)
+    for block in reassemble_tcp_payloads(tcp_packets):
+        messages.extend(_extract_tcp_sip_messages(block))
+
+    for message in sorted(messages, key=lambda item: item.packet_time):
+        _add_message_to_flow(flows, initial_messages, message)
 
     return flows
 
 
-def _extract_tcp_sip_messages(packet, tcp_buffers):
-    payload = _extract_payload(packet)
-
-    if not payload or (IP not in packet and IPv6 not in packet):
-        return []
-
-    source_ip, destination_ip, source_port, destination_port = _extract_endpoints(packet)
-    key = (source_ip, destination_ip, source_port, destination_port)
-    state = tcp_buffers.setdefault(
-        key,
-        {"payload": b"", "packet_time": None, "fragmented": False, "segment_count": 0},
-    )
-
-    if not state["payload"]:
-        state["packet_time"] = float(packet.time)
-        state["fragmented"] = _is_ip_fragmented(packet)
-
-    state["payload"] += payload
-    state["segment_count"] += 1
-    state["fragmented"] = state["fragmented"] or _is_ip_fragmented(packet)
+def _extract_tcp_sip_messages(block):
+    state = {
+        "payload": block.payload,
+        "packet_time": block.first_timestamp,
+        "fragmented": block.fragmented,
+        "segmented": block.segmented,
+    }
     messages = []
 
     while True:
@@ -302,25 +304,18 @@ def _extract_tcp_sip_messages(packet, tcp_buffers):
 
         message = _parse_sip_payload(
             message_payload,
-            source_ip,
-            destination_ip,
-            source_port,
-            destination_port,
+            block.source_ip,
+            block.destination_ip,
+            block.source_port,
+            block.destination_port,
             state["fragmented"],
             state["packet_time"],
             "TCP",
-            state["segment_count"] > 1,
+            state["segmented"],
         )
 
         if message is not None:
             messages.append(message)
-
-        if state["payload"]:
-            state["packet_time"] = float(packet.time)
-            state["fragmented"] = _is_ip_fragmented(packet)
-            state["segment_count"] = 1
-        else:
-            state["segment_count"] = 0
 
     return messages
 
@@ -356,22 +351,52 @@ def _pop_complete_sip_message(state):
     return payload[:message_length]
 
 
-def _add_message_to_flow(flows, message):
+def _add_message_to_flow(flows, initial_messages, message):
     if message is None:
         return
 
-    if message.call_id not in flows:
-        flows[message.call_id] = SIPFlow(
-            call_id=message.call_id,
-            source_ip=message.source_ip,
-            destination_ip=message.destination_ip,
-        )
+    dialog_key = _get_dialog_key(message)
+    base_key = message.call_id
 
-    flow = flows[message.call_id]
+    if dialog_key not in flows:
+        if dialog_key != base_key and base_key in flows:
+            flow = flows.pop(base_key)
+            flow.dialog_key = dialog_key
+            flows[dialog_key] = flow
+        else:
+            flow = SIPFlow(
+                call_id=message.call_id,
+                source_ip=message.source_ip,
+                destination_ip=message.destination_ip,
+                dialog_key=dialog_key,
+            )
+            flows[dialog_key] = flow
+            if dialog_key != base_key:
+                for initial_message in initial_messages.get(base_key, []):
+                    _record_flow_message(flow, initial_message)
+    else:
+        flow = flows[dialog_key]
+
+    _record_flow_message(flow, message)
+
+    if message.to_tag is None:
+        initial_messages.setdefault(base_key, []).append(message)
+
+
+def _get_dialog_key(message):
+    if not message.from_tag or not message.to_tag:
+        return message.call_id
+    return f"{message.call_id}|{message.from_tag}|{message.to_tag}"
+
+
+def _record_flow_message(flow, message):
     flow.messages.append(message)
 
     if message.is_request and message.method == "INVITE":
+        if flow.invites > 0:
+            flow.reinvites += 1
         flow.invites += 1
+        _track_media_operation(flow, message)
 
     if message.is_request and message.method == "ACK":
         flow.acknowledgements += 1
@@ -384,6 +409,12 @@ def _add_message_to_flow(flows, message):
 
     if message.is_request and message.method == "REGISTER":
         flow.registers += 1
+
+    if message.is_request and message.method == "OPTIONS":
+        flow.options += 1
+
+    if message.is_request and message.method == "REFER":
+        flow.refers += 1
 
     if not message.is_request:
         flow.responses += 1
@@ -418,6 +449,26 @@ def _add_message_to_flow(flows, message):
 
     if message.tcp_segmented:
         flow.tcp_segmented_messages += 1
+
+
+def _track_media_operation(flow, message):
+    active_media = [media for media in message.sdp_media if media.media_type == "audio"]
+    if not active_media:
+        return
+
+    on_hold = any(
+        media.port == 0
+        or media.direction in {"sendonly", "recvonly", "inactive"}
+        or media.connection_address in {"0.0.0.0", "::"}
+        for media in active_media
+    )
+
+    if on_hold and not flow.media_on_hold:
+        flow.hold_events += 1
+        flow.media_on_hold = True
+    elif not on_hold and flow.media_on_hold:
+        flow.resume_events += 1
+        flow.media_on_hold = False
 
 
 def _is_ip_fragmented(packet):
@@ -475,8 +526,12 @@ def _parse_sdp_media(text):
 
         if line.startswith("m="):
             parts = line[2:].split()
+            if len(parts) < 3:
+                current_media = None
+                continue
+
             port_value = parts[1].split("/", 1)[0]
-            if len(parts) < 3 or not port_value.isdigit():
+            if not port_value.isdigit() or not 0 <= int(port_value) <= 65535:
                 current_media = None
                 continue
 

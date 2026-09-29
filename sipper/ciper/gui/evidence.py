@@ -1,4 +1,5 @@
 from ciper.voip_quality import jitter_observation, packet_loss_observation
+from ciper.tls import TLS_CIPHER_SUITE_NAMES
 
 
 def build_finding_evidence_context(engine_result, finding):
@@ -11,7 +12,7 @@ def build_finding_evidence_context(engine_result, finding):
     call_id = _extract_call_id(finding.get("evidence", []))
     lines = []
 
-    flow = engine_result.get("sip_flows", {}).get(call_id) if call_id else None
+    flow = _get_sip_flow(engine_result, call_id)
     if flow is not None:
         lines.append("Sinalizacao SIP correlacionada:")
         for message in flow.messages:
@@ -74,6 +75,38 @@ def build_finding_evidence_context(engine_result, finding):
         else:
             lines.append("Nao foi possivel associar um conjunto IP completo; valide MTU e o ponto de captura.")
 
+    if finding_type.startswith("tls_"):
+        tls_flows = _related_tls_flows(engine_result, source, destination)
+        if tls_flows:
+            lines.append("Handshake TLS correlacionado:")
+            for tls_flow in tls_flows:
+                lines.append(
+                    f"TLS {tls_flow.source_ip}:{tls_flow.source_port} -> "
+                    f"{tls_flow.destination_ip}:{tls_flow.destination_port} | "
+                    f"ClientHello={tls_flow.client_hello_count}, ServerHello={tls_flow.server_hello_count}, "
+                    f"certificados={tls_flow.certificate_count}"
+                )
+                if tls_flow.server_names:
+                    lines.append(f"  SNI: {', '.join(sorted(tls_flow.server_names))}")
+                if tls_flow.offered_versions:
+                    lines.append(f"  Versoes ofertadas: {', '.join(sorted(tls_flow.offered_versions))}")
+                if tls_flow.negotiated_version:
+                    lines.append(f"  Versao negociada: {tls_flow.negotiated_version}")
+                if tls_flow.offered_cipher_suites:
+                    ciphers = [
+                        TLS_CIPHER_SUITE_NAMES.get(cipher, f"0x{cipher:04X}")
+                        for cipher in sorted(tls_flow.offered_cipher_suites)
+                    ]
+                    lines.append(f"  Cipher suites ofertadas: {', '.join(ciphers)}")
+                if tls_flow.negotiated_cipher_suite is not None:
+                    cipher = TLS_CIPHER_SUITE_NAMES.get(
+                        tls_flow.negotiated_cipher_suite,
+                        f"0x{tls_flow.negotiated_cipher_suite:04X}",
+                    )
+                    lines.append(f"  Cipher suite negociada: {cipher}")
+        else:
+            lines.append("Nenhum fluxo TLS correspondente foi encontrado no ponto de captura.")
+
     return lines
 
 
@@ -82,6 +115,17 @@ def _extract_call_id(evidence):
         if item.startswith("Call-ID: "):
             return item.removeprefix("Call-ID: ").strip()
     return None
+
+
+def _get_sip_flow(engine_result, call_id):
+    if not call_id:
+        return None
+
+    flows = engine_result.get("sip_flows", {})
+    return flows.get(call_id) or next(
+        (flow for flow in flows.values() if flow.call_id == call_id),
+        None,
+    )
 
 
 def _related_rtp_streams(engine_result, finding):
@@ -100,6 +144,15 @@ def _related_rtp_streams(engine_result, finding):
             and {stream.source_ip, stream.destination_ip} == {source, destination}
         )
         if ssrc is None or stream.ssrc == ssrc
+    ]
+
+
+def _related_tls_flows(engine_result, source, destination):
+    return [
+        flow
+        for flow in engine_result.get("tls_flows", {}).values()
+        if (flow.source_ip, flow.destination_ip) == (source, destination)
+        or (flow.source_ip, flow.destination_ip) == (destination, source)
     ]
 
 

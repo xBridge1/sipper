@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 
 from scapy.layers.inet import IP, TCP, ICMP
 
+from ciper.network import get_ip_addresses, get_network_layer
+
 from ciper.models import TCPFlow
 
 
@@ -10,11 +12,10 @@ def build_tcp_flows(packets):
     packet_groups = defaultdict(list)
 
     for packet in packets:
-        if IP not in packet or TCP not in packet:
+        if get_network_layer(packet) is None or TCP not in packet:
             continue
 
-        source_ip = packet[IP].src
-        destination_ip = packet[IP].dst
+        source_ip, destination_ip = get_ip_addresses(packet)
         source_port = packet[TCP].sport
         destination_port = packet[TCP].dport
 
@@ -34,9 +35,9 @@ def build_tcp_flows(packets):
         first_packet = flow_packets[0]
 
         flow = TCPFlow(
-            source_ip=first_packet[IP].src,
+            source_ip=get_ip_addresses(first_packet)[0],
             source_port=first_packet[TCP].sport,
-            destination_ip=first_packet[IP].dst,
+            destination_ip=get_ip_addresses(first_packet)[1],
             destination_port=first_packet[TCP].dport,
         )
 
@@ -55,7 +56,7 @@ def build_tcp_flows(packets):
             flow.last_timestamp = timestamp
 
             if (
-                packet[IP].src == flow.source_ip
+                get_ip_addresses(packet)[0] == flow.source_ip
                 and packet[TCP].sport == flow.source_port
             ):
                 flow.packets_forward += 1

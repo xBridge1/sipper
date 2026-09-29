@@ -1,8 +1,6 @@
 from dataclasses import dataclass, field
 
-from scapy.layers.inet import IP
-from scapy.layers.inet import TCP, UDP
-from scapy.layers.inet import TCP, UDP
+from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment
 
 
@@ -15,8 +13,6 @@ class IPFragmentGroup:
     fragments: list[tuple[int, int]] = field(default_factory=list)
     has_initial_fragment: bool = False
     has_final_fragment: bool = False
-    source_port: int | None = None
-    destination_port: int | None = None
     source_port: int | None = None
     destination_port: int | None = None
 
@@ -78,21 +74,8 @@ def build_ip_fragment_groups(packets):
             if source_port is not None:
                 group.source_port = source_port
                 group.destination_port = destination_port
-        if start == 0:
-            source_port, destination_port = _extract_ports(packet)
-            if source_port is not None:
-                group.source_port = source_port
-                group.destination_port = destination_port
 
     return groups
-
-
-def _extract_ports(packet):
-    if TCP in packet:
-        return int(packet[TCP].sport), int(packet[TCP].dport)
-    if UDP in packet:
-        return int(packet[UDP].sport), int(packet[UDP].dport)
-    return None, None
 
 
 def _extract_ports(packet):

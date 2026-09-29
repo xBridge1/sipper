@@ -1,4 +1,5 @@
 from ciper.findings import Finding
+from ciper.tls import TLS_CIPHER_SUITE_NAMES, TLS_WEAK_CIPHER_SUITES
 
 
 def detect_tls_fatal_alerts(flows):
@@ -120,6 +121,43 @@ def detect_tls_malformed_records(flows):
                 recommendation=(
                     "Check for packet corruption, protocol mismatches, TLS inspection issues, "
                     "or a service speaking a different protocol on this port."
+                ),
+            )
+        )
+
+    return findings
+
+
+def detect_tls_weak_cipher_suites(flows):
+    findings = []
+
+    for flow in flows.values():
+        offered_weak = sorted(flow.offered_cipher_suites & TLS_WEAK_CIPHER_SUITES)
+        negotiated_weak = flow.negotiated_cipher_suite in TLS_WEAK_CIPHER_SUITES
+        if not offered_weak and not negotiated_weak:
+            continue
+
+        weak_names = [TLS_CIPHER_SUITE_NAMES.get(cipher, f"0x{cipher:04X}") for cipher in offered_weak]
+        if negotiated_weak:
+            weak_names.append(TLS_CIPHER_SUITE_NAMES.get(flow.negotiated_cipher_suite, f"0x{flow.negotiated_cipher_suite:04X}"))
+
+        findings.append(
+            Finding(
+                type="tls_weak_cipher_suite",
+                severity="high" if negotiated_weak else "medium",
+                confidence=0.95,
+                source_ip=flow.source_ip,
+                destination_ip=flow.destination_ip,
+                description="TLS negotiation offered or selected deprecated cipher suites.",
+                evidence=[
+                    f"Source: {flow.source_ip}:{flow.source_port}",
+                    f"Destination: {flow.destination_ip}:{flow.destination_port}",
+                    f"Weak cipher suites: {', '.join(dict.fromkeys(weak_names))}",
+                    f"Negotiated weak cipher: {'yes' if negotiated_weak else 'no'}",
+                ],
+                recommendation=(
+                    "Disable RC4 and 3DES cipher suites, and prefer modern TLS 1.2 or TLS 1.3 "
+                    "cipher suites on both endpoints."
                 ),
             )
         )

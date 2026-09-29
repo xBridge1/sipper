@@ -388,6 +388,104 @@ def detect_sip_signaling_fragmentation(flows, fragment_groups=None):
     return findings
 
 
+def detect_sip_register_failures(flows):
+    return _detect_method_failures(
+        flows,
+        "REGISTER",
+        "sip_register_failure",
+        "SIP registration was rejected by the registrar.",
+        "Check credentials, realm configuration, registration policy, and reachability of the registrar.",
+    )
+
+
+def detect_sip_transfer_failures(flows):
+    return _detect_method_failures(
+        flows,
+        "REFER",
+        "sip_transfer_failure",
+        "SIP call transfer request was rejected.",
+        "Check transfer permissions, Refer-To routing, dial plan, and the target endpoint availability.",
+    )
+
+
+def detect_sip_options_no_response(flows):
+    findings = []
+
+    for flow in flows.values():
+        options_requests = [
+            message
+            for message in flow.messages
+            if message.is_request and message.method == "OPTIONS"
+        ]
+        options_responses = [
+            message
+            for message in flow.messages
+            if not message.is_request and message.cseq_method == "OPTIONS"
+        ]
+        if not options_requests or options_responses:
+            continue
+
+        request = options_requests[0]
+        findings.append(
+            Finding(
+                type="sip_options_no_response",
+                severity="medium",
+                confidence=0.85,
+                source_ip=request.source_ip,
+                destination_ip=request.destination_ip,
+                description="SIP OPTIONS capability probe received no response.",
+                evidence=[
+                    f"Call-ID: {flow.call_id}",
+                    f"OPTIONS requests: {len(options_requests)}",
+                    "OPTIONS responses: 0",
+                ],
+                recommendation=(
+                    "Check SIP reachability, OPTIONS keepalive configuration, firewall rules, and the destination SIP service."
+                ),
+            )
+        )
+
+    return findings
+
+
+def _detect_method_failures(flows, method, finding_type, description, recommendation):
+    findings = []
+
+    for flow in flows.values():
+        errors = [
+            message
+            for message in flow.messages
+            if (
+                not message.is_request
+                and message.cseq_method == method
+                and message.status_code is not None
+                and 400 <= message.status_code < 700
+            )
+        ]
+        if not errors:
+            continue
+
+        response = errors[0]
+        findings.append(
+            Finding(
+                type=finding_type,
+                severity="high",
+                confidence=0.95,
+                source_ip=response.source_ip,
+                destination_ip=response.destination_ip,
+                description=description,
+                evidence=[
+                    f"Call-ID: {flow.call_id}",
+                    f"Response: {response.status_code} {response.reason_phrase or ''}".strip(),
+                    f"CSeq method: {method}",
+                ],
+                recommendation=recommendation,
+            )
+        )
+
+    return findings
+
+
 def _find_related_fragment_groups(flow, fragment_groups):
     return [
         group

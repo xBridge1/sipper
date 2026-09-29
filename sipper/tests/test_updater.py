@@ -25,7 +25,11 @@ def test_check_for_update_returns_newer_release_installer(monkeypatch):
             {
                 "name": "SIPPER-Setup-1.1.0.exe",
                 "browser_download_url": "https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe",
-            }
+            },
+            {
+                "name": "SIPPER-Setup-1.1.0.exe.sha256",
+                "browser_download_url": "https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe.sha256",
+            },
         ],
     }
     monkeypatch.setattr("ciper.updater.urlopen", lambda request, timeout: FakeResponse(payload))
@@ -34,6 +38,7 @@ def test_check_for_update_returns_newer_release_installer(monkeypatch):
 
     assert update.version == "1.1.0"
     assert update.download_url.endswith("SIPPER-Setup-1.1.0.exe")
+    assert update.checksum_url.endswith("SIPPER-Setup-1.1.0.exe.sha256")
 
 
 def test_check_for_update_ignores_current_release(monkeypatch):

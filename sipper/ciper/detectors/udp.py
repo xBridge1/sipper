@@ -1,5 +1,6 @@
 from ciper.findings import Finding
 from ciper.udp_tracker import track_udp_packets
+from scapy.packet import Raw
 
 UDP_REQUEST_RESPONSE_PORTS = {
     53,      # DNS
@@ -36,13 +37,11 @@ def detect_udp_no_response(flows):
         if not forward_events:
             continue
 
-        if flow.destination_port not in UDP_REQUEST_RESPONSE_PORTS:
-            continue
-
-        if reverse_events:
+        if not _expects_response(flow) or reverse_events:
             continue
 
         request_count = len(forward_events)
+        recognized_request = _contains_recognized_sip_request(flow)
 
         if request_count >= 3:
             severity = "high"
@@ -53,6 +52,9 @@ def detect_udp_no_response(flows):
         else:
             severity = "medium"
             confidence = 0.80
+
+        if flow.destination_port in {5060, 5061} and not recognized_request:
+            confidence -= 0.15
 
         findings.append(
             Finding(
@@ -72,6 +74,7 @@ def detect_udp_no_response(flows):
                     f"Destination: {flow.destination_ip}:{flow.destination_port}",
                     f"Packets sent: {request_count}",
                     "Response packets: 0",
+                    "SIP request recognized: yes" if recognized_request else "Application request not identified",
                 ],
             )
         )
@@ -83,10 +86,7 @@ def detect_udp_burst_no_response(flows):
     findings = []
 
     for flow in flows.values():
-        if flow.destination_port not in UDP_REQUEST_RESPONSE_PORTS:
-            continue
-
-        if flow.packets_reverse != 0:
+        if not _expects_response(flow) or flow.packets_reverse != 0:
             continue
 
         if flow.packets_forward < 3:
@@ -119,3 +119,41 @@ def detect_udp_burst_no_response(flows):
         )
 
     return findings
+
+
+def _expects_response(flow):
+    if flow.destination_port not in UDP_REQUEST_RESPONSE_PORTS:
+        return False
+
+    if flow.destination_port not in {5060, 5061}:
+        return True
+
+    return not any(_is_sip_response_or_ack(packet) for packet in flow.packets)
+
+
+def _contains_recognized_sip_request(flow):
+    return any(_is_sip_request(packet) for packet in flow.packets)
+
+
+def _is_sip_response_or_ack(packet):
+    line = _sip_start_line(packet)
+    return line.startswith("SIP/2.0") or line.startswith("ACK ")
+
+
+def _is_sip_request(packet):
+    line = _sip_start_line(packet)
+    if not line or line.startswith("SIP/2.0"):
+        return False
+    parts = line.split()
+    return len(parts) >= 3 and parts[2].upper() == "SIP/2.0" and parts[0].isalpha()
+
+
+def _sip_start_line(packet):
+    if Raw not in packet:
+        return ""
+
+    payload = bytes(packet[Raw].load)
+    if not payload:
+        return ""
+    lines = payload.decode("utf-8", errors="ignore").splitlines()
+    return lines[0].strip().upper() if lines else ""

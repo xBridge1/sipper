@@ -26,6 +26,28 @@ RTP_PAYLOAD_TYPE_NAMES = {
     18: "G729",
 }
 
+RTP_CLOCK_RATES = {
+    0: 8000,
+    2: 8000,
+    3: 8000,
+    4: 8000,
+    5: 8000,
+    6: 16000,
+    7: 8000,
+    8: 8000,
+    9: 8000,
+    10: 44100,
+    11: 44100,
+    12: 8000,
+    13: 8000,
+    14: 90000,
+    15: 8000,
+    16: 11025,
+    17: 22050,
+    18: 8000,
+}
+RTP_DEFAULT_CLOCK_RATE = 8000
+
 
 @dataclass
 class RTPPacket:
@@ -60,6 +82,9 @@ class RTPStream:
     max_jitter: float = 0.0
     jitter_samples: list[float] = field(default_factory=list)
     payload_types: set[int] = field(default_factory=set)
+    clock_rate: int = RTP_DEFAULT_CLOCK_RATE
+    rfc_jitter: float = 0.0
+    max_transit_variation: float = 0.0
 
     @property
     def duration(self):
@@ -99,7 +124,7 @@ def parse_rtp_packet(packet):
     if version != 2:
         return None
 
-    if 192 <= payload[1] <= 223:
+    if _is_rtcp_packet(payload):
         return None
 
     payload_type = payload[1] & 0x7F
@@ -156,6 +181,41 @@ def parse_rtp_packet(packet):
     )
 
 
+def _is_rtcp_packet(payload):
+    packet_type = payload[1]
+    minimum_lengths = {
+        200: 28,
+        201: 8,
+        202: 4,
+        203: 4,
+        204: 8,
+        205: 12,
+        206: 12,
+        207: 8,
+    }
+
+    if packet_type not in minimum_lengths or len(payload) < minimum_lengths[packet_type]:
+        return False
+
+    if payload[2:] == b"\x00" * (len(payload) - 2):
+        return True
+
+    offset = 0
+    while offset < len(payload):
+        if len(payload) - offset < 4 or payload[offset] >> 6 != 2:
+            return False
+        current_type = payload[offset + 1]
+        if current_type not in minimum_lengths:
+            return False
+        record_length = ((payload[offset + 2] << 8) | payload[offset + 3]) + 1
+        record_length *= 4
+        if record_length < minimum_lengths[current_type] or offset + record_length > len(payload):
+            return False
+        offset += record_length
+
+    return offset == len(payload)
+
+
 def build_rtp_streams(packets):
     streams = {}
 
@@ -198,11 +258,16 @@ def build_rtp_streams(packets):
 
 def _finalize_stream(stream):
     previous_packet = None
-    previous_delta = None
+    previous_transit = None
+    jitter_units = 0.0
 
     for packet in stream.packets:
+        clock_rate = RTP_CLOCK_RATES.get(packet.payload_type, RTP_DEFAULT_CLOCK_RATE)
+        stream.clock_rate = clock_rate
+
         if previous_packet is None:
             previous_packet = packet
+            previous_transit = packet.packet_time * clock_rate - packet.timestamp
             continue
 
         sequence_delta = (packet.sequence - previous_packet.sequence) & 0xFFFF
@@ -219,11 +284,15 @@ def _finalize_stream(stream):
         if arrival_delta > 1.0:
             stream.interruptions += 1
 
-        if previous_delta is not None:
-            jitter = abs(arrival_delta - previous_delta)
-            stream.jitter_samples.append(jitter)
-            if jitter > stream.max_jitter:
-                stream.max_jitter = jitter
+        transit = packet.packet_time * clock_rate - packet.timestamp
+        transit_variation = abs(transit - previous_transit)
+        jitter_units += (transit_variation - jitter_units) / 16
+        rfc_jitter_seconds = jitter_units / clock_rate
+        transit_variation_seconds = transit_variation / clock_rate
+        stream.jitter_samples.append(rfc_jitter_seconds)
+        stream.rfc_jitter = rfc_jitter_seconds
+        stream.max_transit_variation = max(stream.max_transit_variation, transit_variation_seconds)
+        stream.max_jitter = max(stream.max_jitter, transit_variation_seconds)
 
-        previous_delta = arrival_delta
+        previous_transit = transit
         previous_packet = packet

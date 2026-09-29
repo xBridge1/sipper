@@ -17,6 +17,7 @@ class UpdateInfo:
     version: str
     download_url: str
     release_url: str
+    checksum_url: str = ""
 
 
 def check_for_update(current_version=CURRENT_VERSION, timeout=3):
@@ -49,6 +50,15 @@ def check_for_update(current_version=CURRENT_VERSION, timeout=3):
         ),
         release_url,
     )
+    checksum_url = next(
+        (
+            asset.get("browser_download_url", "")
+            for asset in release.get("assets", [])
+            if asset.get("name", "").startswith("SIPPER-Setup-")
+            and asset.get("name", "").endswith(".exe.sha256")
+        ),
+        "",
+    )
     if not installer_url:
         return None
 
@@ -56,6 +66,7 @@ def check_for_update(current_version=CURRENT_VERSION, timeout=3):
         version=str(latest_version),
         download_url=installer_url,
         release_url=release_url,
+        checksum_url=checksum_url,
     )
 
 

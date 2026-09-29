@@ -6,6 +6,29 @@ JITTER_HIGH_QUALITY_MS = 30.0
 JITTER_SEVERE_MS = 100.0
 
 
+def estimate_mos(loss_percent, jitter_seconds, codec=None):
+    jitter_ms = max(0.0, jitter_seconds * 1000)
+    codec_penalty = 7.0 if codec in {"G729", "G723"} else 0.0
+    loss_penalty = min(70.0, max(0.0, loss_percent) * 2.5)
+    jitter_penalty = min(35.0, max(0.0, jitter_ms - 20.0) * 0.35)
+    rating = max(0.0, min(100.0, 93.2 - codec_penalty - loss_penalty - jitter_penalty))
+    mos = 1.0 + 0.035 * rating + rating * (rating - 60.0) * (100.0 - rating) * 0.000007
+    return round(max(1.0, min(4.5, mos)), 2)
+
+
+def mos_observation(mos):
+    if mos >= 4.0:
+        state = "boa"
+    elif mos >= 3.5:
+        state = "aceitavel"
+    elif mos >= 3.0:
+        state = "degradada"
+    else:
+        state = "ruim"
+
+    return f"MOS estimado: {mos:.2f} ({state}). Estimativa baseada em perda e variacao RTP; atraso fim a fim nao foi medido."
+
+
 def packet_loss_observation(loss_percent):
     if loss_percent <= LOSS_TARGET_PERCENT:
         state = "Excelente"

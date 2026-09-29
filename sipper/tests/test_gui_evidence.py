@@ -1,6 +1,7 @@
 from ciper.gui.evidence import build_finding_evidence_context
 from ciper.rtp import RTPPacket, RTPStream
 from ciper.sip import SIPFlow, SIPMessage
+from ciper.tls import TLSFlow
 
 
 def test_finding_context_shows_sip_packets_when_call_has_no_rtp():
@@ -101,3 +102,35 @@ def test_finding_context_summarizes_only_the_affected_jitter_stream():
     assert any(item.startswith("IMPACTO:") for item in context)
     assert any(item.startswith("POR QUE E RUIM:") for item in context)
     assert any("PIOR PICO:" in item for item in context)
+
+
+def test_finding_context_shows_tls_handshake_metadata():
+    flow = TLSFlow(
+        source_ip="192.168.1.10",
+        source_port=50000,
+        destination_ip="192.168.1.20",
+        destination_port=443,
+        client_hello_count=1,
+        server_hello_count=1,
+        certificate_count=1,
+        server_names={"pbx.example.test"},
+        offered_versions={"TLS 1.2", "TLS 1.3"},
+        offered_cipher_suites={0x0005, 0x1301},
+        negotiated_version="TLS 1.3",
+        negotiated_cipher_suite=0x1301,
+    )
+    finding = {
+        "type": "tls_weak_cipher_suite",
+        "source": "192.168.1.10",
+        "destination": "192.168.1.20",
+        "evidence": [],
+    }
+
+    context = build_finding_evidence_context(
+        {"tls_flows": {"tls": flow}, "sip_flows": {}, "rtp_streams": {}, "fragment_groups": {}},
+        finding,
+    )
+
+    assert any("SNI: pbx.example.test" in item for item in context)
+    assert any("Versao negociada: TLS 1.3" in item for item in context)
+    assert any("TLS_RSA_WITH_RC4_128_SHA" in item for item in context)

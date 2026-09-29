@@ -47,7 +47,7 @@ from ciper.resources import resource_path
 from ciper.rtp import parse_rtp_packet
 from ciper.settings import AnalysisSettings, load_settings, save_settings
 from ciper.sip import parse_sip_message
-from ciper.voip_quality import jitter_observation, packet_loss_observation, quality_reference_note
+from ciper.voip_quality import jitter_observation, mos_observation, packet_loss_observation, quality_reference_note
 from ciper.logging_setup import configure_logging
 from ciper.updater import CURRENT_VERSION, check_for_update
 from scapy.layers.inet import ICMP, IP, TCP, UDP
@@ -1453,12 +1453,12 @@ class SipperWindow(QMainWindow):
         self.last_traffic_series = self._build_traffic_series(traffic_counts)
         self.last_traffic_labels = traffic_labels
         self.last_viewmodel = build_dashboard_viewmodel(packet_analysis, engine_result)
-        self.call_index = {call["call_id"]: call for call in self.last_viewmodel["calls"]}
+        self.call_index = {call["dialog_key"]: call for call in self.last_viewmodel["calls"]}
         self.finding_index = {
             self._finding_key(finding, index): finding
             for index, finding in enumerate(self.last_viewmodel["findings"])
         }
-        self.selected_call_id = self.last_viewmodel["calls"][0]["call_id"] if self.last_viewmodel["calls"] else None
+        self.selected_call_id = self.last_viewmodel["calls"][0]["dialog_key"] if self.last_viewmodel["calls"] else None
         self.selected_finding_key = (
             self._finding_key(self.last_viewmodel["findings"][0], 0) if self.last_viewmodel["findings"] else None
         )
@@ -2221,6 +2221,7 @@ class SipperWindow(QMainWindow):
             return
 
         findings = self.last_viewmodel["findings"]
+        tls_flows = list(self.last_engine_result.get("tls_flows", {}).values())
         tls_findings = [finding for finding in findings if finding["type"].startswith("tls_")]
         fragmentation_findings = [
             finding
@@ -2247,6 +2248,9 @@ class SipperWindow(QMainWindow):
                     f"Alertas fatais: {sum(1 for finding in tls_findings if finding['type'] == 'tls_fatal_alert')}",
                     f"Handshake sem resposta: {sum(1 for finding in tls_findings if finding['type'] == 'tls_client_hello_no_response')}",
                     f"Versao legada: {sum(1 for finding in tls_findings if finding['type'] == 'tls_legacy_version')}",
+                    f"Ciphers legados: {sum(1 for finding in tls_findings if finding['type'] == 'tls_weak_cipher_suite')}",
+                    f"SNI observados: {len({name for flow in tls_flows for name in flow.server_names})}",
+                    f"Handshakes analisados: {len(tls_flows)}",
                 ]
             )
         )
@@ -2467,7 +2471,8 @@ class SipperWindow(QMainWindow):
             self.about_update_button.setText("Verificar atualizacoes")
             return
 
-        self.about_update_status.setText(f"Atualizacao {update.version} disponivel.")
+        checksum_note = " Checksum SHA-256 publicado." if update.checksum_url else ""
+        self.about_update_status.setText(f"Atualizacao {update.version} disponivel.{checksum_note}")
         self.about_update_button.setText(f"Baixar SIPPER {update.version}")
         self._set_status(f"Atualizacao {update.version} disponivel")
 
@@ -2501,7 +2506,7 @@ class SipperWindow(QMainWindow):
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                item.setData(Qt.UserRole, call["call_id"])
+                item.setData(Qt.UserRole, call["dialog_key"])
                 item.setToolTip(str(value))
                 if column == 5:
                     item.setBackground(QColor(self._severity_color(call["severity"], palette)))
@@ -2654,7 +2659,7 @@ class SipperWindow(QMainWindow):
             return
 
         sip_flows = self.last_engine_result.get("sip_flows", {})
-        flow = sip_flows.get(call["call_id"])
+        flow = sip_flows.get(call["dialog_key"])
 
         if flow is None:
             self._set_status("Fluxo SIP nao encontrado para a chamada selecionada")
@@ -2744,7 +2749,7 @@ class SipperWindow(QMainWindow):
         if self.selected_call_id and self.selected_call_id in self.call_index:
             return self.call_index[self.selected_call_id]
         if self.last_viewmodel and self.last_viewmodel["calls"]:
-            self.selected_call_id = self.last_viewmodel["calls"][0]["call_id"]
+            self.selected_call_id = self.last_viewmodel["calls"][0]["dialog_key"]
             return self.last_viewmodel["calls"][0]
         return None
 
@@ -2771,6 +2776,17 @@ class SipperWindow(QMainWindow):
             rtp_metrics["max_jitter"],
         )
         timings = call.get("signaling_timings", {})
+        quality_metrics = call.get("media_quality_metrics", {})
+        operations = call.get("signaling_operations", {})
+        mos = quality_metrics.get("mos_estimate")
+        mos_text = mos_observation(mos) if mos is not None else "MOS indisponivel: nao houve RTP correlacionado."
+        operation_items = [
+            f"re-INVITE: {operations.get('reinvites', 0)}",
+            f"hold: {operations.get('holds', 0)}",
+            f"resume: {operations.get('resumes', 0)}",
+            f"TRANSFER: {operations.get('transfers', 0)}",
+            f"OPTIONS: {operations.get('options', 0)}",
+        ]
         direction_lines = [
             f"{direction}: {metric['packet_count']} pacotes, {metric['loss_percent']:.2f}% loss, {metric['max_jitter'] * 1000:.1f} ms jitter"
             for direction, metric in rtp_metrics.get("directions", {}).items()
@@ -2803,14 +2819,20 @@ class SipperWindow(QMainWindow):
                 <div style="margin-bottom:8px;"><b>Streams RTP:</b> {call['rtp_stream_count']}</div>
                 <div style="margin-bottom:8px;"><b>Pacotes RTP:</b> {rtp_metrics['packet_count']}</div>
                 <div style="margin-bottom:8px;"><b>Packet loss:</b> {rtp_metrics['loss_percent']:.2f}% ({rtp_metrics['lost_packets']})</div>
-                <div style="margin-bottom:8px;"><b>Jitter medio/maximo:</b> {rtp_metrics['average_jitter'] * 1000:.1f} / {rtp_metrics['max_jitter'] * 1000:.1f} ms</div>
+                <div style="margin-bottom:8px;"><b>Jitter RFC 3550:</b> {rtp_metrics.get('rfc_jitter', 0.0) * 1000:.1f} ms</div>
+                <div style="margin-bottom:8px;"><b>Pior variacao entre pacotes:</b> {rtp_metrics['max_jitter'] * 1000:.1f} ms</div>
                 <div style="margin-bottom:8px;"><b>Out-of-order:</b> {rtp_metrics['out_of_order_packets']}</div>
                 <div style="margin-bottom:14px;"><b>SSRC:</b> {self._escape_html(', '.join(str(ssrc) for ssrc in rtp_metrics['ssrcs']) or '-')}</div>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Interpretacao de qualidade</div>
                 <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
+                    <div style="margin-bottom:6px;"><b>{self._escape_html(mos_text)}</b></div>
                     <div style="margin-bottom:6px;">{self._escape_html(loss_observation)}</div>
                     <div style="margin-bottom:6px;">{self._escape_html(jitter_observation_text)}</div>
                     <div style="color:{palette['muted']};">{self._escape_html(quality_reference_note())}</div>
+                </div>
+                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Operacoes SIP</div>
+                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
+                    {self._escape_html(' | '.join(operation_items))}
                 </div>
                 <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">RTP por direcao</div>
                 <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{direction_html}</ul>

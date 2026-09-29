@@ -43,12 +43,15 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
         "calls": [
             {
                 "call_id": summary["call_id"],
+                "dialog_key": summary.get("dialog_key", summary["call_id"]),
                 "signaling_state": summary["signaling_state"],
                 "media_state": summary["media_state"],
                 "media_direction": summary.get("media_direction", "unknown"),
                 "media_quality": summary.get("media_quality", "unknown"),
                 "signaling_timeline": summary.get("signaling_timeline", []),
                 "signaling_timings": summary.get("signaling_timings", {}),
+                "signaling_operations": summary.get("signaling_operations", {}),
+                "media_quality_metrics": summary.get("media_quality_metrics", {}),
                 "severity": summary["severity"],
                 "primary_issue": summary["primary_issue"],
                 "codec_guesses": summary["codec_guesses"],
@@ -109,11 +112,13 @@ def _build_protocol_items(protocol_counter):
 def _build_rtp_stream_items(rtp_streams, call_summaries):
     codecs_by_ssrc = {}
     call_id_by_ssrc = {}
+    dialog_key_by_ssrc = {}
 
     for summary in call_summaries:
         for ssrc in summary.get("rtp_metrics", {}).get("ssrcs", []):
             codecs_by_ssrc[ssrc] = summary.get("codec_guesses", [])
             call_id_by_ssrc[ssrc] = summary["call_id"]
+            dialog_key_by_ssrc[ssrc] = summary.get("dialog_key", summary["call_id"])
 
     items = []
 
@@ -135,6 +140,7 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
                 "codec_guesses": codecs_by_ssrc.get(stream.ssrc, stream.codec_guesses),
                 "payload_types": sorted(getattr(stream, "payload_types", set())),
                 "call_id": call_id_by_ssrc.get(stream.ssrc),
+                "dialog_key": dialog_key_by_ssrc.get(stream.ssrc),
             }
         )
 

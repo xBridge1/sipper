@@ -1,7 +1,7 @@
 from ciper.resources import resource_path
 
 
-DEFAULT_VERSION = "1.0.1"
+DEFAULT_VERSION = "1.0.4"
 
 
 def installed_version():

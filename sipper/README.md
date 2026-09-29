@@ -30,16 +30,24 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 - Correlacao por `Call-ID`, origem, destino, estados e duracao da chamada.
 - Mensagens `INVITE`, respostas `1xx`, `2xx`, `ACK`, `BYE` e `CANCEL`.
-- Erros SIP `4xx`, `5xx` e `6xx`, timeout de INVITE e `200 OK` sem ACK.
+- Erros SIP `4xx`, `5xx` e `6xx`, timeout de INVITE, `200 OK` sem ACK, falhas de `REGISTER`, `REFER` e `OPTIONS`.
+- Eventos de re-INVITE, hold e resume no resumo operacional da chamada.
 - Identificacao de sinalizacao fragmentada e cabecalhos SIP excessivamente grandes.
 - Leitura de SDP para enderecos de midia, codecs, RTCP, `rtcp-mux` e `mid`.
 
 ### RTP
 
 - Streams por SSRC, endpoints, portas, codec estimado e duracao.
-- Packet loss, jitter elevado, pacotes fora de ordem e anomalias de timestamp.
+- Packet loss, jitter RFC 3550, picos de variacao entre pacotes, MOS estimado, pacotes fora de ordem e anomalias de timestamp.
 - Interrupcoes de stream, mudancas de payload type e SSRC.
 - Provavel audio em uma via e correlacao entre qualidade de midia e chamada SIP.
+
+### TLS e fragmentacao
+
+- ClientHello, ServerHello, alertas fatais, versoes TLS legadas e registros malformados.
+- SNI, versoes e cipher suites ofertadas, versao e cipher suite negociadas quando observaveis.
+- Deteccao de oferta ou negociacao de RC4 e 3DES, com evidencias do handshake correspondente.
+- Fragmentacao IP incompleta, sobreposta e correlacao com sinalizacao SIP e risco de MTU.
 
 ## Requisitos
 
@@ -83,7 +91,7 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-Os testes cobrem deteccoes TCP, UDP, ICMP, SIP e RTP, correlacoes do engine, relatorios, configuracoes, cancelamento e leitura de PCAP em streaming.
+Os testes cobrem deteccoes TCP, UDP, ICMP, SIP, RTP e TLS, correlacoes do engine, relatorios, configuracoes, cancelamento e leitura de PCAP em streaming. O corpus sintetico reproduzivel esta em `tests/pcaps/`.
 
 ## Instalador Windows
 
@@ -93,10 +101,10 @@ O projeto inclui uma cadeia de distribuicao para Windows com PyInstaller e Inno 
 2. Ative o ambiente virtual e execute:
 
 ```powershell
-.\packaging\build.ps1 -Version 1.0.3
+.\packaging\build.ps1 -Version 1.0.4
 ```
 
-O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe` e o instalador final em `dist-installer\SIPPER-Setup-1.0.3.exe`.
+O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.0.4.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.0.4.exe.sha256`.
 
 Para montar apenas o executavel, sem exigir o Inno Setup:
 
@@ -106,14 +114,16 @@ Para montar apenas o executavel, sem exigir o Inno Setup:
 
 ### Publicacao no GitHub Releases
 
-Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow executa os testes, cria o instalador e publica dois arquivos: o instalador `SIPPER-Setup-<versao>.exe` e a versao portatil `.zip`.
+Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow na raiz do repositorio (`.github/workflows/release-windows.yml`) executa os testes e publica o instalador `SIPPER-Setup-<versao>.exe`, seu checksum `.exe.sha256` e o pacote portatil `.zip`.
 
 ```powershell
-git tag v1.0.3
-git push origin v1.0.3
+git tag v1.0.4
+git push origin v1.0.4
 ```
 
 O acompanhamento fica na aba **Actions** do repositorio. Quando o workflow terminar, os arquivos estarao na aba **Releases**.
+
+Para assinatura Authenticode em uma maquina de release, defina `SIPPER_SIGN_CERTIFICATE` com o caminho de um certificado PFX. `SIPPER_SIGN_PASSWORD` e `SIPPER_TIMESTAMP_URL` sao opcionais. Sem essas variaveis, o build continua criando instalador e checksum, mas sem assinatura de codigo.
 
 ## Atualizacoes
 
@@ -145,5 +155,5 @@ As conclusoes sao baseadas no que foi efetivamente capturado. Ausencia de trafeg
 ## Proximos passos
 
 - Empacotamento do aplicativo como EXE para distribuicao no Windows.
-- Evolucao de correlacao SIP/SDP/RTP para cenarios mais complexos.
-- Ampliacao da cobertura de PCAPs reais e testes de regressao.
+- Ampliacao da cobertura de PCAPs reais anonimizados e testes de regressao.
+- Correlacao SIP/SDP/RTP para cenarios com SBC, NAT, ICE e multiplas midias.

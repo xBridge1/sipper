@@ -1,19 +1,19 @@
 from collections import defaultdict
 
-from scapy.layers.inet import IP, UDP
+from scapy.layers.inet import UDP
 
 from ciper.models import UDPFlow
+from ciper.network import get_ip_addresses, get_network_layer
 
 
 def build_udp_flows(packets):
     packet_groups = defaultdict(list)
 
     for packet in packets:
-        if IP not in packet or UDP not in packet:
+        if get_network_layer(packet) is None or UDP not in packet:
             continue
 
-        source_ip = packet[IP].src
-        destination_ip = packet[IP].dst
+        source_ip, destination_ip = get_ip_addresses(packet)
         source_port = packet[UDP].sport
         destination_port = packet[UDP].dport
 
@@ -33,9 +33,9 @@ def build_udp_flows(packets):
         first_packet = flow_packets[0]
 
         flow = UDPFlow(
-            source_ip=first_packet[IP].src,
+            source_ip=get_ip_addresses(first_packet)[0],
             source_port=first_packet[UDP].sport,
-            destination_ip=first_packet[IP].dst,
+            destination_ip=get_ip_addresses(first_packet)[1],
             destination_port=first_packet[UDP].dport,
         )
 
@@ -54,7 +54,7 @@ def build_udp_flows(packets):
                 flow.byte_count += len(bytes(packet[UDP]))
 
             if (
-                packet[IP].src == flow.source_ip
+                get_ip_addresses(packet)[0] == flow.source_ip
                 and packet[UDP].sport == flow.source_port
             ):
                 flow.packets_forward += 1
