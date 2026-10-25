@@ -65,6 +65,29 @@ def test_engine_detects_legacy_tls_version():
     assert "tls_legacy_version" in finding_types
 
 
+def test_engine_treats_ssl3_as_legacy_instead_of_malformed_tls():
+    ssl_three_client_hello = _tls_record(22, _tls_handshake(1, b"\x03\x00"), b"\x03\x00")
+
+    result = analyze_pcap(
+        [_tcp_packet("192.168.1.10", "192.168.1.20", 50000, 443, ssl_three_client_hello)]
+    )
+    finding_types = {finding.type for finding in result["findings"]}
+
+    assert "tls_legacy_version" in finding_types
+    assert "tls_malformed_record" not in finding_types
+
+
+def test_engine_accepts_valid_tls_heartbeat_record():
+    heartbeat = _tls_record(24, b"\x01\x00\x00")
+
+    result = analyze_pcap(
+        [_tcp_packet("192.168.1.10", "192.168.1.20", 50000, 443, heartbeat)]
+    )
+
+    assert len(result["tls_flows"]) == 1
+    assert not any(finding.type == "tls_malformed_record" for finding in result["findings"])
+
+
 def test_engine_detects_incomplete_ip_fragment_set():
     packets = [
         IP(src="192.168.1.10", dst="192.168.1.20", id=17, flags="MF") / Raw(b"fragment"),
@@ -100,6 +123,20 @@ def test_engine_reports_complete_ip_fragmentation_as_low_risk():
     )
 
     assert fragmentation_finding.severity == "low"
+
+
+def test_duplicate_ip_fragment_is_not_reported_as_overlap():
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20", id=21, flags="MF") / Raw(b"0123456789abcdef"),
+        IP(src="192.168.1.10", dst="192.168.1.20", id=21, flags="MF") / Raw(b"0123456789abcdef"),
+        IP(src="192.168.1.10", dst="192.168.1.20", id=21, frag=2) / Raw(b"lastpart"),
+    ]
+
+    result = analyze_pcap(packets)
+    finding_types = {finding.type for finding in result["findings"]}
+
+    assert "ip_fragment_overlap" not in finding_types
+    assert "ip_fragmentation" in finding_types
 
 
 def test_engine_detects_incomplete_ipv6_fragment_set():

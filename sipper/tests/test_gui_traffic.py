@@ -1,4 +1,5 @@
-from scapy.layers.inet import IP, UDP
+from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet6 import IPv6
 
 from ciper.gui.app import _build_traffic_counts
 from tests.test_rtp import make_rtp_packet
@@ -40,3 +41,17 @@ def test_build_traffic_counts_bounds_sparse_capture_series():
     assert len(labels) <= 60
     assert sum(counters["UDP"]) == 2
     assert duration == 99900.0
+
+
+def test_build_traffic_counts_includes_ipv6_tcp_and_udp():
+    packets = [
+        IPv6(src="2001:db8::10", dst="2001:db8::20") / TCP(sport=50000, dport=443),
+        IPv6(src="2001:db8::10", dst="2001:db8::20") / UDP(sport=50000, dport=53) / b"dns",
+    ]
+    packets[0].time = 100.0
+    packets[1].time = 101.0
+
+    counters, _labels, _duration = _build_traffic_counts(packets)
+
+    assert sum(counters["TCP"]) == 1
+    assert sum(counters["UDP"]) == 1

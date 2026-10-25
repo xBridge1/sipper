@@ -50,3 +50,29 @@ def test_check_for_update_ignores_current_release(monkeypatch):
     monkeypatch.setattr("ciper.updater.urlopen", lambda request, timeout: FakeResponse(payload))
 
     assert check_for_update("1.0.0") is None
+
+
+def test_check_for_update_ignores_malformed_api_payload(monkeypatch):
+    monkeypatch.setattr("ciper.updater.urlopen", lambda request, timeout: FakeResponse(["invalid"]))
+
+    assert check_for_update("1.0.0") is None
+
+
+def test_check_for_update_skips_invalid_and_empty_assets(monkeypatch):
+    payload = {
+        "tag_name": "v1.1.0",
+        "html_url": "https://github.com/xBridge1/sipper/releases/tag/v1.1.0",
+        "assets": [
+            None,
+            {"name": "SIPPER-Setup-empty.exe", "browser_download_url": ""},
+            {
+                "name": "SIPPER-Setup-1.1.0.exe",
+                "browser_download_url": "https://example.test/SIPPER-Setup-1.1.0.exe",
+            },
+        ],
+    }
+    monkeypatch.setattr("ciper.updater.urlopen", lambda request, timeout: FakeResponse(payload))
+
+    update = check_for_update("1.0.0")
+
+    assert update.download_url == "https://example.test/SIPPER-Setup-1.1.0.exe"

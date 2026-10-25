@@ -2,6 +2,39 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [1.1.0] - 2026-10-25
+
+### Added
+
+- Perfil opcional de compatibilidade FreeSWITCH, limitado aos IPs ou redes configurados pelo usuario.
+- Diagnosticos para identidade anonymous, ofertas SDP unidirecionais, mod_callcenter, Request-URI, session timers, DTMF, enderecos de midia e headers SIP personalizados.
+- Evidencias FreeSWITCH com Call-ID, Dialog-Key, caminho do pacote e referencias oficiais.
+- Testes de regressao para atribuicao de falhas, correlacao temporal SIP/RTP, IPv6, configuracoes, atualizador, TLS e fragmentacao.
+
+### Changed
+
+- Correlacao SIP/RTP considera portas SDP e intervalo temporal da chamada para separar dialogos sequenciais que reutilizam o mesmo caminho de midia.
+- Streams RTP no GUI sao associados por endpoints, portas e SSRC, evitando colisao entre chamadas.
+- Findings SIP e ICMP apresentam a direcao real do pacote que contem o erro.
+- Contagem de pacotes do dashboard usa o total efetivamente analisado, incluindo protocolos nao classificados.
+- Evidencias de RTP apos BYE informam o atraso e toleram pacotes residuais de ate 100 ms.
+
+### Fixed
+
+- Falsos positivos de troca de payload type e SSRC entre chamadas RTP sequenciais.
+- Falsos positivos de one-way audio entre pares de portas RTP diferentes e RTP orfao quando havia outro dialogo SIP na captura.
+- Suporte IPv6 na classificacao geral, grafico de trafego e detectores TCP/UDP aplicaveis.
+- Tratamento de SSL 3.0 como versao legada, records TLS Heartbeat validos e payloads malformados da API de atualizacao.
+- Fragmentos IP duplicados deixaram de ser classificados como sobreposicao.
+- Arquivos de configuracao invalidos ou com codificacao incorreta voltam aos valores seguros.
+- Falha de permissao no diretorio do usuario nao impede a inicializacao do logging ou da interface.
+- Thread de verificacao de atualizacao e liberada corretamente ao terminar.
+
+### Validation
+
+- Suite automatizada com 193 testes passando.
+- Compilacao dos modulos, smoke test do GUI e analise de todas as amostras PCAP concluidas sem excecao.
+
 ## [1.0.4] - 2026-09-29
 
 ### Added

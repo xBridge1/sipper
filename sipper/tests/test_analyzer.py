@@ -1,4 +1,5 @@
 from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet6 import IPv6
 
 from ciper.analyzer import analyze_packets
 from tests.test_rtp import make_rtp_packet
@@ -35,3 +36,16 @@ def test_analyze_packets_classifies_sip_and_rtp_before_udp():
     result = analyze_packets([sip_packet, rtp_packet, udp_packet])
 
     assert result["protocols"] == {"SIP": 1, "RTP": 1, "UDP": 1}
+
+
+def test_analyze_packets_counts_ipv6_endpoints_and_protocols():
+    packet = IPv6(src="2001:db8::10", dst="2001:db8::20") / TCP(
+        sport=12345,
+        dport=443,
+    )
+
+    result = analyze_packets([packet])
+
+    assert result["protocols"]["TCP"] == 1
+    assert result["source_ips"]["2001:db8::10"] == 1
+    assert result["destination_ips"]["2001:db8::20"] == 1

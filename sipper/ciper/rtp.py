@@ -77,6 +77,9 @@ class RTPStream:
     last_timestamp: float | None = None
     lost_packets: int = 0
     out_of_order_packets: int = 0
+    duplicate_packets: int = 0
+    unique_packet_count: int = 0
+    loss_observed_packet_count: int = 0
     timestamp_anomalies: int = 0
     interruptions: int = 0
     max_jitter: float = 0.0
@@ -85,6 +88,7 @@ class RTPStream:
     clock_rate: int = RTP_DEFAULT_CLOCK_RATE
     rfc_jitter: float = 0.0
     max_transit_variation: float = 0.0
+    max_jitter_pair: tuple[RTPPacket, RTPPacket] | None = None
 
     @property
     def duration(self):
@@ -216,8 +220,9 @@ def _is_rtcp_packet(payload):
     return offset == len(payload)
 
 
-def build_rtp_streams(packets):
+def build_rtp_streams(packets, clock_rates=None):
     streams = {}
+    clock_rates = clock_rates or {}
 
     for packet in packets:
         parsed = parse_rtp_packet(packet)
@@ -251,30 +256,42 @@ def build_rtp_streams(packets):
         stream.last_timestamp = parsed.packet_time
 
     for stream in streams.values():
-        _finalize_stream(stream)
+        _finalize_stream(stream, clock_rates)
 
     return streams
 
 
-def _finalize_stream(stream):
+def _finalize_stream(stream, clock_rates):
     previous_packet = None
-    previous_transit = None
+    previous_clock_rate = None
     jitter_units = 0.0
+    seen_sequences = set()
+    highest_sequence = None
+    base_sequence = None
 
     for packet in stream.packets:
-        clock_rate = RTP_CLOCK_RATES.get(packet.payload_type, RTP_DEFAULT_CLOCK_RATE)
+        clock_rate = _get_clock_rate(packet, clock_rates)
         stream.clock_rate = clock_rate
+
+        extended_sequence = _extend_sequence(packet.sequence, highest_sequence)
+        if extended_sequence in seen_sequences:
+            stream.duplicate_packets += 1
+            continue
+
+        seen_sequences.add(extended_sequence)
+        if base_sequence is None:
+            base_sequence = extended_sequence
+
+        if highest_sequence is not None and extended_sequence < highest_sequence:
+            stream.out_of_order_packets += 1
+            continue
+
+        highest_sequence = extended_sequence
 
         if previous_packet is None:
             previous_packet = packet
-            previous_transit = packet.packet_time * clock_rate - packet.timestamp
+            previous_clock_rate = clock_rate
             continue
-
-        sequence_delta = (packet.sequence - previous_packet.sequence) & 0xFFFF
-        if 1 < sequence_delta <= 0x7FFF:
-            stream.lost_packets += sequence_delta - 1
-        elif sequence_delta == 0 or sequence_delta > 0x7FFF:
-            stream.out_of_order_packets += 1
 
         timestamp_delta = (packet.timestamp - previous_packet.timestamp) & 0xFFFFFFFF
         if timestamp_delta == 0 or timestamp_delta > 0x7FFFFFFF:
@@ -284,15 +301,79 @@ def _finalize_stream(stream):
         if arrival_delta > 1.0:
             stream.interruptions += 1
 
-        transit = packet.packet_time * clock_rate - packet.timestamp
-        transit_variation = abs(transit - previous_transit)
+        if clock_rate != previous_clock_rate:
+            previous_packet = packet
+            previous_clock_rate = clock_rate
+            continue
+
+        signed_timestamp_delta = timestamp_delta if timestamp_delta <= 0x7FFFFFFF else timestamp_delta - 0x100000000
+        arrival_units = arrival_delta * clock_rate
+        transit_variation = abs(arrival_units - signed_timestamp_delta)
         jitter_units += (transit_variation - jitter_units) / 16
         rfc_jitter_seconds = jitter_units / clock_rate
         transit_variation_seconds = transit_variation / clock_rate
         stream.jitter_samples.append(rfc_jitter_seconds)
         stream.rfc_jitter = rfc_jitter_seconds
-        stream.max_transit_variation = max(stream.max_transit_variation, transit_variation_seconds)
-        stream.max_jitter = max(stream.max_jitter, transit_variation_seconds)
+        if transit_variation_seconds > stream.max_transit_variation:
+            stream.max_transit_variation = transit_variation_seconds
+            stream.max_jitter = transit_variation_seconds
+            stream.max_jitter_pair = (previous_packet, packet)
 
-        previous_transit = transit
         previous_packet = packet
+        previous_clock_rate = clock_rate
+
+    stream.unique_packet_count = len(seen_sequences)
+    if highest_sequence is not None and base_sequence is not None:
+        in_window_sequences = {
+            sequence
+            for sequence in seen_sequences
+            if base_sequence <= sequence <= highest_sequence
+        }
+        stream.loss_observed_packet_count = len(in_window_sequences)
+        stream.lost_packets = max(
+            0,
+            highest_sequence - base_sequence + 1 - stream.loss_observed_packet_count,
+        )
+
+
+def _extend_sequence(sequence, reference):
+    if reference is None:
+        return sequence
+
+    cycle = reference & ~0xFFFF
+    candidate = cycle | sequence
+    if candidate - reference > 0x8000:
+        candidate -= 0x10000
+    elif reference - candidate > 0x8000:
+        candidate += 0x10000
+    return candidate
+
+
+def _get_clock_rate(packet, clock_rates):
+    return (
+        _resolve_clock_rate(
+            clock_rates.get((packet.source_ip, packet.source_port, packet.payload_type)),
+            packet.packet_time,
+        )
+        or _resolve_clock_rate(
+            clock_rates.get((packet.destination_ip, packet.destination_port, packet.payload_type)),
+            packet.packet_time,
+        )
+        or RTP_CLOCK_RATES.get(packet.payload_type, RTP_DEFAULT_CLOCK_RATE)
+    )
+
+
+def _resolve_clock_rate(value, packet_time):
+    if isinstance(value, (int, float)):
+        return int(value)
+    if not value:
+        return None
+
+    eligible = [
+        (effective_time, clock_rate)
+        for effective_time, clock_rate in value
+        if effective_time <= float(packet_time)
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda item: item[0])[1]

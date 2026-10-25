@@ -15,6 +15,8 @@ class IPFragmentGroup:
     has_final_fragment: bool = False
     source_port: int | None = None
     destination_port: int | None = None
+    duplicate_fragments: int = 0
+    fragment_payloads: dict[tuple[int, int, bool], bytes] = field(default_factory=dict, repr=False)
 
     @property
     def fragment_count(self):
@@ -66,6 +68,14 @@ def build_ip_fragment_groups(packets):
             ),
         )
         end = start + len(payload)
+        fragment_range = (start, end, is_final)
+        if (
+            fragment_range in group.fragment_payloads
+            and group.fragment_payloads[fragment_range] == payload
+        ):
+            group.duplicate_fragments += 1
+            continue
+        group.fragment_payloads.setdefault(fragment_range, payload)
         group.fragments.append((start, end))
         group.has_initial_fragment = group.has_initial_fragment or start == 0
         group.has_final_fragment = group.has_final_fragment or is_final

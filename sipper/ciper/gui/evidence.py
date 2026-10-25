@@ -10,9 +10,10 @@ def build_finding_evidence_context(engine_result, finding):
     destination = finding.get("destination", "")
     finding_type = finding.get("type", "")
     call_id = _extract_call_id(finding.get("evidence", []))
+    dialog_key = _extract_dialog_key(finding.get("evidence", []))
     lines = []
 
-    flow = _get_sip_flow(engine_result, call_id)
+    flow = _get_sip_flow(engine_result, call_id, dialog_key)
     if flow is not None:
         lines.append("Sinalizacao SIP correlacionada:")
         for message in flow.messages:
@@ -24,7 +25,7 @@ def build_finding_evidence_context(engine_result, finding):
             )
             for media in message.sdp_media:
                 lines.append(
-                    f"  SDP {media.media_type}: {media.connection_address or message.source_ip}:{media.port} "
+                    f"  SDP {media.media_type}: {media.connection_address or 'not informed'}:{media.port} "
                     f"{media.protocol} {media.direction}"
                 )
 
@@ -44,7 +45,12 @@ def build_finding_evidence_context(engine_result, finding):
                     f"fora de ordem={stream.out_of_order_packets}"
                 )
                 lines.extend(_rtp_packet_samples(stream))
-                expected_packets = stream.packet_count + stream.lost_packets
+                unique_packet_count = getattr(stream, "unique_packet_count", 0) or stream.packet_count
+                loss_observed_packet_count = (
+                    getattr(stream, "loss_observed_packet_count", 0)
+                    or unique_packet_count
+                )
+                expected_packets = loss_observed_packet_count + stream.lost_packets
                 loss_percent = stream.lost_packets / expected_packets * 100 if expected_packets else 0.0
                 lines.append(f"  {packet_loss_observation(loss_percent)}")
                 lines.append(f"  {jitter_observation(stream.average_jitter, stream.max_jitter)}")
@@ -117,11 +123,20 @@ def _extract_call_id(evidence):
     return None
 
 
-def _get_sip_flow(engine_result, call_id):
+def _extract_dialog_key(evidence):
+    for item in evidence:
+        if item.startswith("Dialog-Key: "):
+            return item.removeprefix("Dialog-Key: ").strip()
+    return None
+
+
+def _get_sip_flow(engine_result, call_id, dialog_key=None):
+    flows = engine_result.get("sip_flows", {})
+    if dialog_key:
+        return flows.get(dialog_key)
     if not call_id:
         return None
 
-    flows = engine_result.get("sip_flows", {})
     return flows.get(call_id) or next(
         (flow for flow in flows.values() if flow.call_id == call_id),
         None,
@@ -192,23 +207,11 @@ def _high_jitter_context(streams):
 
 
 def _worst_jitter_sample(stream):
-    if len(stream.packets) < 3:
+    max_jitter_pair = getattr(stream, "max_jitter_pair", None)
+    if max_jitter_pair is None:
         return None
-
-    previous_delta = None
-    worst = None
-
-    for index in range(1, len(stream.packets)):
-        previous = stream.packets[index - 1]
-        current = stream.packets[index]
-        arrival_delta = current.packet_time - previous.packet_time
-        if previous_delta is not None:
-            variation = abs(arrival_delta - previous_delta)
-            if worst is None or variation > worst[2]:
-                worst = (previous, current, variation)
-        previous_delta = arrival_delta
-
-    return worst
+    previous, current = max_jitter_pair
+    return previous, current, stream.max_jitter * 1000
 
 
 def _rtp_packet_samples(stream):

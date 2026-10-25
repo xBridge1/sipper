@@ -56,6 +56,18 @@ def test_detect_icmp_unreachable_multiple_codes_generate_multiple_findings():
     assert "icmp_fragmentation_needed" in finding_types
 
 
+def test_icmp_error_finding_uses_the_actual_error_packet_direction():
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20") / ICMP(type=8, code=0),
+        IP(src="192.168.1.20", dst="192.168.1.10") / ICMP(type=3, code=3),
+    ]
+
+    finding = detect_icmp_unreachable(build_icmp_flows(packets))[0]
+
+    assert finding.source_ip == "192.168.1.20"
+    assert finding.destination_ip == "192.168.1.10"
+
+
 def test_detect_icmp_redirect():
     packets = [
         IP(src="192.168.1.1", dst="192.168.1.10") / ICMP(type=5, code=1),

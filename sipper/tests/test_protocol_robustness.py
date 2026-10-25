@@ -3,10 +3,11 @@ from scapy.layers.inet6 import IPv6
 from scapy.packet import Raw
 
 from ciper.detectors.tls import detect_tls_fatal_alerts, detect_tls_malformed_records
+from ciper.detectors.rtp import detect_rtp_one_way_audio
 from ciper.detectors.udp import detect_udp_no_response
 from ciper.engine import analyze_pcap
 from ciper.flows import build_tcp_flows
-from ciper.rtp import parse_rtp_packet
+from ciper.rtp import build_rtp_streams, parse_rtp_packet
 from ciper.sip import build_sip_flows, parse_sip_message
 from ciper.tls import build_tls_flows
 from ciper.udp_flows import build_udp_flows
@@ -178,6 +179,31 @@ def test_ipv6_tcp_udp_and_tls_flows_are_tracked():
     assert len(udp_flows) == 1
 
 
+def test_ipv6_tcp_handshake_reset_is_reported_without_ipv4_assumptions():
+    packets = [
+        IPv6(src="2001:db8::10", dst="2001:db8::20")
+        / TCP(sport=50000, dport=443, flags="S"),
+        IPv6(src="2001:db8::20", dst="2001:db8::10")
+        / TCP(sport=443, dport=50000, flags="RA"),
+    ]
+
+    result = analyze_pcap(packets)
+
+    assert "tcp_handshake_reset" in {finding.type for finding in result["findings"]}
+
+
+def test_ipv6_udp_no_response_is_detected():
+    packet = (
+        IPv6(src="2001:db8::10", dst="2001:db8::20")
+        / UDP(sport=50000, dport=53)
+        / b"query"
+    )
+
+    result = analyze_pcap([packet])
+
+    assert "udp_no_response" in {finding.type for finding in result["findings"]}
+
+
 def test_rtp_marker_payload_type_is_not_mistaken_for_rtcp():
     parsed = parse_rtp_packet(_rtp_packet(payload_type=72, marker=1))
 
@@ -195,6 +221,60 @@ def test_each_orphan_rtp_stream_is_reported_without_sip():
     result = analyze_pcap([first, second])
 
     assert sum(finding.type == "rtp_without_sip" for finding in result["findings"]) == 2
+
+
+def test_unrelated_sip_flow_does_not_hide_orphan_rtp_stream():
+    sip = (
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / _sip_invite("unrelated-sip")
+    )
+    rtp_packets = [
+        _rtp_packet(source="10.0.0.1", destination="10.0.0.2", sequence=100),
+        _rtp_packet(source="10.0.0.1", destination="10.0.0.2", sequence=101),
+    ]
+
+    result = analyze_pcap([sip, *rtp_packets])
+
+    assert any(
+        finding.type == "rtp_without_sip"
+        and finding.source_ip == "10.0.0.1"
+        and finding.destination_ip == "10.0.0.2"
+        for finding in result["findings"]
+    )
+
+
+def test_opposite_rtp_on_another_port_pair_does_not_hide_one_way_audio():
+    packets = [
+        *[
+            _rtp_packet(
+                source="10.0.0.1",
+                destination="10.0.0.2",
+                source_port=4000,
+                destination_port=4002,
+                sequence=sequence,
+            )
+            for sequence in (100, 101, 102)
+        ],
+        *[
+            _rtp_packet(
+                source="10.0.0.2",
+                destination="10.0.0.1",
+                source_port=5002,
+                destination_port=5000,
+                sequence=sequence,
+            )
+            for sequence in (200, 201, 202)
+        ],
+    ]
+
+    findings = detect_rtp_one_way_audio(build_rtp_streams(packets))
+
+    assert any(
+        finding.source_ip == "10.0.0.1"
+        and "Source port: 4000" in finding.evidence
+        for finding in findings
+    )
 
 
 def test_sip_forked_dialogs_are_not_merged_by_call_id():
@@ -273,6 +353,24 @@ def test_rtp_after_bye_ignores_unrelated_media_streams():
     ]
     for index, packet in enumerate(packets):
         packet.time = float(index)
+
+    result = analyze_pcap(packets)
+
+    assert "rtp_after_bye" not in {finding.type for finding in result["findings"]}
+
+
+def test_rtp_after_bye_allows_a_short_in_flight_packet_grace_period():
+    invite = _sip_invite("bye-grace")
+    ok = b"SIP/2.0 200 OK\r\nCall-ID: bye-grace\r\nCSeq: 1 INVITE\r\n\r\n"
+    bye = b"BYE sip:100@example.test SIP/2.0\r\nCall-ID: bye-grace\r\nCSeq: 2 BYE\r\n\r\n"
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20") / UDP(sport=5060, dport=5060) / invite,
+        IP(src="192.168.1.20", dst="192.168.1.10") / UDP(sport=5060, dport=5060) / ok,
+        IP(src="192.168.1.10", dst="192.168.1.20") / UDP(sport=5060, dport=5060) / bye,
+        _rtp_packet(source="192.168.1.10", destination="192.168.1.20"),
+    ]
+    for packet, timestamp in zip(packets, (1.0, 1.1, 2.0, 2.05)):
+        packet.time = timestamp
 
     result = analyze_pcap(packets)
 

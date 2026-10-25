@@ -1,6 +1,6 @@
 from ciper.gui.evidence import build_finding_evidence_context
 from ciper.rtp import RTPPacket, RTPStream
-from ciper.sip import SIPFlow, SIPMessage
+from ciper.sip import SDPMediaDescription, SIPFlow, SIPMessage
 from ciper.tls import TLSFlow
 
 
@@ -87,6 +87,7 @@ def test_finding_context_summarizes_only_the_affected_jitter_stream():
         packet_count=3,
         max_jitter=0.46,
     )
+    stream.max_jitter_pair = (stream.packets[1], stream.packets[2])
     finding = {
         "type": "rtp_high_jitter",
         "source": "10.0.0.1",
@@ -134,3 +135,49 @@ def test_finding_context_shows_tls_handshake_metadata():
     assert any("SNI: pbx.example.test" in item for item in context)
     assert any("Versao negociada: TLS 1.3" in item for item in context)
     assert any("TLS_RSA_WITH_RC4_128_SHA" in item for item in context)
+
+
+def test_finding_context_does_not_invent_missing_sdp_address():
+    message = SIPMessage(
+        source_ip="198.51.100.10",
+        destination_ip="10.0.0.20",
+        source_port=5060,
+        destination_port=5060,
+        is_request=True,
+        method="INVITE",
+        status_code=None,
+        reason_phrase=None,
+        call_id="missing-sdp-address",
+        start_line="INVITE sip:queue@example.test SIP/2.0",
+        header_count=2,
+        max_header_length=20,
+        is_fragmented=False,
+        packet_time=10.0,
+        sdp_media=[
+            SDPMediaDescription(
+                media_type="audio",
+                port=4000,
+                protocol="RTP/AVP",
+            )
+        ],
+    )
+    flow = SIPFlow(
+        call_id=message.call_id,
+        source_ip=message.source_ip,
+        destination_ip=message.destination_ip,
+        messages=[message],
+    )
+    finding = {
+        "type": "freeswitch_unusable_media_address",
+        "source": message.source_ip,
+        "destination": message.destination_ip,
+        "evidence": [f"Call-ID: {message.call_id}"],
+    }
+
+    context = build_finding_evidence_context(
+        {"sip_flows": {flow.call_id: flow}, "rtp_streams": {}, "fragment_groups": {}},
+        finding,
+    )
+
+    assert any("SDP audio: not informed:4000" in item for item in context)
+    assert not any("SDP audio: 198.51.100.10:4000" in item for item in context)

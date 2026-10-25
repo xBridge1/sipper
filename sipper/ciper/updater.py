@@ -35,27 +35,42 @@ def check_for_update(current_version=CURRENT_VERSION, timeout=3):
     except (HTTPError, URLError, OSError, ValueError, json.JSONDecodeError):
         return None
 
+    if not isinstance(release, dict):
+        return None
+
     latest_version = _parse_version(release.get("tag_name", ""))
     installed_version = _parse_version(current_version)
     if latest_version is None or installed_version is None or latest_version <= installed_version:
         return None
 
     release_url = release.get("html_url", "")
+    if not isinstance(release_url, str):
+        release_url = ""
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        assets = []
+    assets = [asset for asset in assets if isinstance(asset, dict)]
     installer_url = next(
         (
             asset.get("browser_download_url", "")
-            for asset in release.get("assets", [])
-            if asset.get("name", "").startswith("SIPPER-Setup-")
+            for asset in assets
+            if isinstance(asset.get("name"), str)
+            and isinstance(asset.get("browser_download_url"), str)
+            and asset.get("name", "").startswith("SIPPER-Setup-")
             and asset.get("name", "").endswith(".exe")
+            and asset.get("browser_download_url")
         ),
         release_url,
     )
     checksum_url = next(
         (
             asset.get("browser_download_url", "")
-            for asset in release.get("assets", [])
-            if asset.get("name", "").startswith("SIPPER-Setup-")
+            for asset in assets
+            if isinstance(asset.get("name"), str)
+            and isinstance(asset.get("browser_download_url"), str)
+            and asset.get("name", "").startswith("SIPPER-Setup-")
             and asset.get("name", "").endswith(".exe.sha256")
+            and asset.get("browser_download_url")
         ),
         "",
     )
@@ -71,7 +86,12 @@ def check_for_update(current_version=CURRENT_VERSION, timeout=3):
 
 
 def _parse_version(value):
+    if not isinstance(value, str):
+        return None
     try:
-        return Version(value.removeprefix("v"))
-    except InvalidVersion:
+        normalized = value.strip()
+        if normalized[:1].lower() == "v":
+            normalized = normalized[1:]
+        return Version(normalized)
+    except (InvalidVersion, TypeError):
         return None

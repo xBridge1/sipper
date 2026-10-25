@@ -1,4 +1,13 @@
 from ciper.findings import Finding
+from ciper.sip import (
+    SIP_FRAGMENTATION_RISK_HEADER_BYTES,
+    SIP_LARGE_HEADER_LINE_BYTES,
+    SIP_UDP_FRAGMENTATION_RISK_BYTES,
+    get_sip_method_responses,
+    get_successful_invite_responses,
+    get_terminal_sip_method_errors,
+    has_matching_sip_ack,
+)
 
 
 def detect_sip_invite_no_response(flows):
@@ -8,7 +17,8 @@ def detect_sip_invite_no_response(flows):
         if flow.invites == 0:
             continue
 
-        if flow.responses != 0:
+        invite_responses = get_sip_method_responses(flow, "INVITE", allow_unspecified=True)
+        if invite_responses:
             continue
 
         findings.append(
@@ -20,11 +30,11 @@ def detect_sip_invite_no_response(flows):
                 destination_ip=flow.destination_ip,
                 description="SIP INVITE was observed without any SIP response.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Source: {flow.source_ip}",
                     f"Destination: {flow.destination_ip}",
                     f"INVITEs: {flow.invites}",
-                    f"Responses: {flow.responses}",
+                    "INVITE responses: 0",
                 ],
                 recommendation=(
                     "Check whether the SIP server or peer is reachable, "
@@ -41,16 +51,10 @@ def detect_sip_error_responses(flows):
     findings = []
 
     for flow in flows.values():
-        if flow.error_responses == 0:
+        if flow.invites == 0:
             continue
 
-        error_messages = [
-            message
-            for message in flow.messages
-            if not message.is_request
-            and message.status_code is not None
-            and 400 <= message.status_code < 700
-        ]
+        error_messages = get_terminal_sip_method_errors(flow, "INVITE", allow_unspecified=True)
 
         if not error_messages:
             continue
@@ -66,10 +70,10 @@ def detect_sip_error_responses(flows):
                 destination_ip=first_error.destination_ip,
                 description="SIP call setup received an error response.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Status: {first_error.status_code} {first_error.reason_phrase}",
                     f"INVITEs: {flow.invites}",
-                    f"Error responses: {flow.error_responses}",
+                    f"INVITE error responses: {len(error_messages)}",
                 ],
                 recommendation=(
                     "Check SIP routing, authentication, dial plan, or the "
@@ -85,10 +89,18 @@ def detect_sip_ok_without_ack(flows):
     findings = []
 
     for flow in flows.values():
-        if flow.success_responses == 0:
+        if flow.invites == 0:
             continue
 
-        if flow.acknowledgements != 0:
+        success_responses = get_successful_invite_responses(flow)
+        if not success_responses:
+            continue
+
+        missing_ack = next(
+            (response for response in success_responses if not has_matching_sip_ack(flow, response)),
+            None,
+        )
+        if missing_ack is None:
             continue
 
         findings.append(
@@ -96,14 +108,15 @@ def detect_sip_ok_without_ack(flows):
                 type="sip_ok_without_ack",
                 severity="high",
                 confidence=0.95,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=missing_ack.source_ip,
+                destination_ip=missing_ack.destination_ip,
                 description="SIP 200 OK was observed without a matching ACK.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"INVITEs: {flow.invites}",
-                    f"200 OK responses: {flow.success_responses}",
+                    f"INVITE 2xx responses: {len(success_responses)}",
                     f"ACKs: {flow.acknowledgements}",
+                    f"Unacknowledged CSeq: {missing_ack.cseq_number or 'unknown'}",
                 ],
                 recommendation=(
                     "Check whether the caller sent the ACK, whether signaling "
@@ -122,10 +135,8 @@ def detect_sip_call_established(flows):
         if flow.invites == 0:
             continue
 
-        if flow.success_responses == 0:
-            continue
-
-        if flow.acknowledgements == 0:
+        success_responses = get_successful_invite_responses(flow)
+        if not any(has_matching_sip_ack(flow, response) for response in success_responses):
             continue
 
         findings.append(
@@ -137,10 +148,10 @@ def detect_sip_call_established(flows):
                 destination_ip=flow.destination_ip,
                 description="SIP call setup completed successfully.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"INVITEs: {flow.invites}",
                     f"Provisional responses: {flow.provisional_responses}",
-                    f"200 OK responses: {flow.success_responses}",
+                    f"INVITE 2xx responses: {len(success_responses)}",
                     f"ACKs: {flow.acknowledgements}",
                 ],
                 recommendation=(
@@ -169,7 +180,7 @@ def detect_sip_call_cancelled(flows):
                 destination_ip=flow.destination_ip,
                 description="SIP call attempt was cancelled before completion.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"INVITEs: {flow.invites}",
                     f"CANCELs: {flow.cancels}",
                 ],
@@ -190,7 +201,8 @@ def detect_sip_call_terminated(flows):
         if flow.byes == 0:
             continue
 
-        if flow.success_responses == 0 or flow.acknowledgements == 0:
+        success_responses = get_successful_invite_responses(flow)
+        if not any(has_matching_sip_ack(flow, response) for response in success_responses):
             continue
 
         findings.append(
@@ -202,8 +214,8 @@ def detect_sip_call_terminated(flows):
                 destination_ip=flow.destination_ip,
                 description="SIP call was established and later terminated with BYE.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
-                    f"200 OK responses: {flow.success_responses}",
+                    *_flow_evidence(flow),
+                    f"INVITE 2xx responses: {len(success_responses)}",
                     f"ACKs: {flow.acknowledgements}",
                     f"BYEs: {flow.byes}",
                 ],
@@ -224,16 +236,22 @@ def detect_sip_large_headers(flows):
         if flow.large_header_messages == 0:
             continue
 
+        message = _first_affected_message(
+            flow,
+            lambda item: item.max_header_length > SIP_LARGE_HEADER_LINE_BYTES
+            or item.header_size > SIP_FRAGMENTATION_RISK_HEADER_BYTES,
+        )
+
         findings.append(
             Finding(
                 type="sip_large_header",
                 severity="medium",
                 confidence=0.90,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=message.source_ip if message else flow.source_ip,
+                destination_ip=message.destination_ip if message else flow.destination_ip,
                 description="SIP message contains unusually large headers.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Messages with large headers: {flow.large_header_messages}",
                     f"Header fragmentation risks: {flow.header_fragmentation_risk_messages}",
                 ],
@@ -252,16 +270,20 @@ def detect_sip_header_validation_errors(flows):
 
     for flow in flows.values():
         if flow.invalid_header_messages > 0:
+            message = _first_affected_message(
+                flow,
+                lambda item: item.invalid_header_count > 0,
+            )
             findings.append(
                 Finding(
                     type="sip_invalid_header",
                     severity="medium",
                     confidence=0.95,
-                    source_ip=flow.source_ip,
-                    destination_ip=flow.destination_ip,
+                    source_ip=message.source_ip if message else flow.source_ip,
+                    destination_ip=message.destination_ip if message else flow.destination_ip,
                     description="SIP messages contain malformed header lines.",
                     evidence=[
-                        f"Call-ID: {flow.call_id}",
+                        *_flow_evidence(flow),
                         f"Messages with invalid headers: {flow.invalid_header_messages}",
                     ],
                     recommendation=(
@@ -272,16 +294,20 @@ def detect_sip_header_validation_errors(flows):
             )
 
         if flow.content_length_mismatches > 0:
+            message = _first_affected_message(
+                flow,
+                lambda item: item.content_length_mismatch,
+            )
             findings.append(
                 Finding(
                     type="sip_content_length_mismatch",
                     severity="high",
                     confidence=0.95,
-                    source_ip=flow.source_ip,
-                    destination_ip=flow.destination_ip,
+                    source_ip=message.source_ip if message else flow.source_ip,
+                    destination_ip=message.destination_ip if message else flow.destination_ip,
                     description="SIP Content-Length does not match the message body size.",
                     evidence=[
-                        f"Call-ID: {flow.call_id}",
+                        *_flow_evidence(flow),
                         f"Content-Length mismatches: {flow.content_length_mismatches}",
                     ],
                     recommendation=(
@@ -301,16 +327,21 @@ def detect_sip_header_fragmentation_risk(flows):
         if flow.header_fragmentation_risk_messages == 0:
             continue
 
+        message = _first_affected_message(
+            flow,
+            lambda item: item.header_size > SIP_FRAGMENTATION_RISK_HEADER_BYTES,
+        )
+
         findings.append(
             Finding(
                 type="sip_header_fragmentation_risk",
                 severity="high",
                 confidence=0.90,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=message.source_ip if message else flow.source_ip,
+                destination_ip=message.destination_ip if message else flow.destination_ip,
                 description="SIP header block size creates a high risk of IP fragmentation.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Oversized header blocks: {flow.header_fragmentation_risk_messages}",
                     "Header threshold: 1200 bytes",
                 ],
@@ -331,16 +362,22 @@ def detect_sip_udp_fragmentation_risk(flows):
         if flow.udp_fragmentation_risk_messages == 0:
             continue
 
+        message = _first_affected_message(
+            flow,
+            lambda item: item.transport == "UDP"
+            and item.message_size > SIP_UDP_FRAGMENTATION_RISK_BYTES,
+        )
+
         findings.append(
             Finding(
                 type="sip_udp_fragmentation_risk",
                 severity="medium",
                 confidence=0.90,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=message.source_ip if message else flow.source_ip,
+                destination_ip=message.destination_ip if message else flow.destination_ip,
                 description="SIP messages over UDP exceed the safe 1200-byte MTU budget.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Oversized SIP/UDP messages: {flow.udp_fragmentation_risk_messages}",
                     "Safe message threshold: 1200 bytes",
                 ],
@@ -373,7 +410,7 @@ def detect_sip_signaling_fragmentation(flows, fragment_groups=None):
                 destination_ip=flow.destination_ip,
                 description="Fragmented IP packets were observed carrying SIP signaling.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Fragmented SIP messages: {flow.fragmented_messages}",
                     f"Related IP fragment sets: {len(related_groups)}",
                     f"TCP-segmented SIP messages: {flow.tcp_segmented_messages}",
@@ -435,7 +472,7 @@ def detect_sip_options_no_response(flows):
                 destination_ip=request.destination_ip,
                 description="SIP OPTIONS capability probe received no response.",
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"OPTIONS requests: {len(options_requests)}",
                     "OPTIONS responses: 0",
                 ],
@@ -452,16 +489,7 @@ def _detect_method_failures(flows, method, finding_type, description, recommenda
     findings = []
 
     for flow in flows.values():
-        errors = [
-            message
-            for message in flow.messages
-            if (
-                not message.is_request
-                and message.cseq_method == method
-                and message.status_code is not None
-                and 400 <= message.status_code < 700
-            )
-        ]
+        errors = get_terminal_sip_method_errors(flow, method)
         if not errors:
             continue
 
@@ -475,7 +503,7 @@ def _detect_method_failures(flows, method, finding_type, description, recommenda
                 destination_ip=response.destination_ip,
                 description=description,
                 evidence=[
-                    f"Call-ID: {flow.call_id}",
+                    *_flow_evidence(flow),
                     f"Response: {response.status_code} {response.reason_phrase or ''}".strip(),
                     f"CSeq method: {method}",
                 ],
@@ -484,6 +512,17 @@ def _detect_method_failures(flows, method, finding_type, description, recommenda
         )
 
     return findings
+
+
+def _flow_evidence(flow):
+    return [
+        f"Call-ID: {flow.call_id}",
+        f"Dialog-Key: {flow.dialog_key}",
+    ]
+
+
+def _first_affected_message(flow, predicate):
+    return next((message for message in flow.messages if predicate(message)), None)
 
 
 def _find_related_fragment_groups(flow, fragment_groups):

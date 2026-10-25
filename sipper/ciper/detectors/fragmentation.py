@@ -9,6 +9,7 @@ def detect_ip_fragmentation(groups):
             f"IP identification: {group.identification}",
             f"IP protocol: {group.protocol}",
             f"Fragments observed: {group.fragment_count}",
+            f"Duplicate fragments ignored: {group.duplicate_fragments}",
             f"Initial fragment observed: {'yes' if group.has_initial_fragment else 'no'}",
             f"Final fragment observed: {'yes' if group.has_final_fragment else 'no'}",
         ]

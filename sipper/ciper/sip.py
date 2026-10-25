@@ -37,10 +37,13 @@ class SIPMessage:
     content_length_mismatch: bool = False
     sdp_media: list["SDPMediaDescription"] = field(default_factory=list)
     cseq_method: str | None = None
+    cseq_number: int | None = None
     from_tag: str | None = None
     to_tag: str | None = None
     contact: str | None = None
     via_branch: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    request_uri: str | None = None
 
 
 @dataclass
@@ -51,6 +54,7 @@ class SDPMediaDescription:
     payload_types: list[int] = field(default_factory=list)
     connection_address: str | None = None
     codecs: dict[int, str] = field(default_factory=dict)
+    clock_rates: dict[int, int] = field(default_factory=dict)
     direction: str = "sendrecv"
     rtcp_port: int | None = None
     media_id: str | None = None
@@ -86,6 +90,11 @@ class SIPFlow:
     hold_events: int = 0
     resume_events: int = 0
     media_on_hold: bool = False
+    invite_transaction_keys: set[tuple] = field(default_factory=set)
+
+    def __post_init__(self):
+        if not self.dialog_key:
+            self.dialog_key = self.call_id
 
 
 def parse_sip_message(packet):
@@ -188,6 +197,7 @@ def _parse_sip_payload(
 
     sdp_media = _parse_sdp_media(text)
     cseq_method = _extract_cseq_method(headers.get("cseq"))
+    cseq_number = _extract_cseq_number(headers.get("cseq"))
     from_tag = _extract_parameter(headers.get("from"), "tag")
     to_tag = _extract_parameter(headers.get("to"), "tag")
     via_branch = _extract_parameter(headers.get("via"), "branch")
@@ -222,10 +232,12 @@ def _parse_sip_payload(
             content_length_mismatch=content_length_mismatch,
             sdp_media=sdp_media,
             cseq_method=cseq_method,
+            cseq_number=cseq_number,
             from_tag=from_tag,
             to_tag=to_tag,
             contact=headers.get("contact"),
             via_branch=via_branch,
+            headers=dict(headers),
         )
 
     parts = start_line.split(" ", 2)
@@ -257,10 +269,13 @@ def _parse_sip_payload(
         content_length_mismatch=content_length_mismatch,
         sdp_media=sdp_media,
         cseq_method=cseq_method,
+        cseq_number=cseq_number,
         from_tag=from_tag,
         to_tag=to_tag,
         contact=headers.get("contact"),
         via_branch=via_branch,
+        headers=dict(headers),
+        request_uri=parts[1],
     )
 
 
@@ -355,19 +370,31 @@ def _add_message_to_flow(flows, initial_messages, message):
     if message is None:
         return
 
-    dialog_key = _get_dialog_key(message)
     base_key = message.call_id
+    dialog_key = _resolve_dialog_key(
+        message,
+        flows,
+        initial_messages.get(base_key, []),
+    )
 
     if dialog_key not in flows:
         if dialog_key != base_key and base_key in flows:
             flow = flows.pop(base_key)
             flow.dialog_key = dialog_key
+            flow.source_ip, flow.destination_ip = _get_dialog_endpoints(
+                message,
+                initial_messages.get(base_key, []),
+            )
             flows[dialog_key] = flow
         else:
+            source_ip, destination_ip = _get_dialog_endpoints(
+                message,
+                initial_messages.get(base_key, []),
+            )
             flow = SIPFlow(
                 call_id=message.call_id,
-                source_ip=message.source_ip,
-                destination_ip=message.destination_ip,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
                 dialog_key=dialog_key,
             )
             flows[dialog_key] = flow
@@ -389,14 +416,58 @@ def _get_dialog_key(message):
     return f"{message.call_id}|{message.from_tag}|{message.to_tag}"
 
 
+def _resolve_dialog_key(message, flows, initial_messages):
+    dialog_key = _get_dialog_key(message)
+    if not message.from_tag or not message.to_tag:
+        return dialog_key
+
+    reverse_key = f"{message.call_id}|{message.to_tag}|{message.from_tag}"
+    if dialog_key not in flows and reverse_key in flows:
+        return reverse_key
+
+    initial_request = next(
+        (
+            initial
+            for initial in initial_messages
+            if initial.is_request and initial.method == "INVITE"
+        ),
+        None,
+    )
+    if initial_request and initial_request.from_tag == message.to_tag:
+        return reverse_key
+    return dialog_key
+
+
+def _get_dialog_endpoints(message, initial_messages):
+    initial_request = next(
+        (
+            initial
+            for initial in initial_messages
+            if initial.is_request and initial.method == "INVITE"
+        ),
+        None,
+    )
+    if initial_request is None:
+        return message.source_ip, message.destination_ip
+
+    if message.is_request and message.source_ip == initial_request.source_ip:
+        destination_ip = message.destination_ip
+    else:
+        destination_ip = message.source_ip
+    return initial_request.source_ip, destination_ip
+
+
 def _record_flow_message(flow, message):
     flow.messages.append(message)
 
     if message.is_request and message.method == "INVITE":
-        if flow.invites > 0:
-            flow.reinvites += 1
-        flow.invites += 1
-        _track_media_operation(flow, message)
+        transaction_key = _invite_transaction_key(message)
+        if transaction_key not in flow.invite_transaction_keys:
+            if flow.invites > 0:
+                flow.reinvites += 1
+            flow.invite_transaction_keys.add(transaction_key)
+            flow.invites += 1
+            _track_media_operation(flow, message)
 
     if message.is_request and message.method == "ACK":
         flow.acknowledgements += 1
@@ -557,8 +628,11 @@ def _parse_sdp_media(text):
             value = line[len("a=rtpmap:"):]
             parts = value.split(None, 1)
             if len(parts) == 2 and parts[0].isdigit():
-                codec = parts[1].split("/", 1)[0]
-                current_media.codecs[int(parts[0])] = codec
+                payload_type = int(parts[0])
+                encoding_parts = parts[1].split("/")
+                current_media.codecs[payload_type] = encoding_parts[0]
+                if len(encoding_parts) >= 2 and encoding_parts[1].isdigit():
+                    current_media.clock_rates[payload_type] = int(encoding_parts[1])
             continue
 
         if line.startswith("a=rtcp:") and current_media is not None:
@@ -629,3 +703,88 @@ def _extract_cseq_method(value):
 
     parts = value.split()
     return parts[1].upper() if len(parts) >= 2 else None
+
+
+def _extract_cseq_number(value):
+    if not value:
+        return None
+
+    number = value.split(None, 1)[0]
+    return int(number) if number.isdigit() else None
+
+
+def _invite_transaction_key(message):
+    if message.cseq_number is not None:
+        return ("cseq", message.cseq_number)
+    if message.via_branch:
+        return ("branch", message.via_branch)
+
+    media_signature = tuple(
+        (
+            media.media_type,
+            media.port,
+            media.connection_address,
+            media.direction,
+            tuple(media.payload_types),
+        )
+        for media in message.sdp_media
+    )
+    return ("content", message.start_line, message.header_text, media_signature)
+
+
+def get_sip_method_responses(flow, method, allow_unspecified=False):
+    return [
+        message
+        for message in flow.messages
+        if (
+            not message.is_request
+            and message.status_code is not None
+            and (
+                message.cseq_method == method
+                or (allow_unspecified and message.cseq_method is None)
+            )
+        )
+    ]
+
+
+def get_terminal_sip_method_errors(flow, method, allow_unspecified=False):
+    responses = get_sip_method_responses(flow, method, allow_unspecified)
+    return [
+        response
+        for response in responses
+        if 400 <= response.status_code < 700
+        and not _is_superseded_auth_challenge(responses, response)
+    ]
+
+
+def get_successful_invite_responses(flow):
+    return [
+        response
+        for response in get_sip_method_responses(flow, "INVITE", allow_unspecified=True)
+        if 200 <= response.status_code < 300
+    ]
+
+
+def has_matching_sip_ack(flow, response):
+    for message in flow.messages:
+        if not message.is_request or message.method != "ACK":
+            continue
+        if response.cseq_number is not None and message.cseq_number != response.cseq_number:
+            continue
+        if response.to_tag and message.to_tag and response.to_tag != message.to_tag:
+            continue
+        return True
+    return False
+
+
+def _is_superseded_auth_challenge(responses, response):
+    if response.status_code not in {401, 407}:
+        return False
+
+    response_index = responses.index(response)
+    for later in responses[response_index + 1:]:
+        if response.cseq_number is None or later.cseq_number is None:
+            return True
+        if later.cseq_number != response.cseq_number:
+            return True
+    return False

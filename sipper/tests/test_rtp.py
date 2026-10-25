@@ -2,6 +2,7 @@ import pytest
 
 from scapy.layers.inet import IP, UDP
 
+from ciper.detectors.rtp import detect_rtp_payload_type_change, detect_rtp_ssrc_change
 from ciper.engine import analyze_pcap
 from ciper.rtp import build_rtp_streams, parse_rtp_packet
 from ciper.settings import AnalysisSettings
@@ -186,6 +187,22 @@ def test_engine_detects_rtp_payload_type_change_and_ssrc_change():
 
     assert "rtp_payload_type_change" in types
     assert "rtp_ssrc_change" in types
+
+
+def test_sequential_calls_reusing_media_path_do_not_raise_rtp_change_alerts():
+    packets = [
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 100, 160, 1111, payload_type=0),
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 101, 320, 1111, payload_type=0),
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 100, 160, 2222, payload_type=8),
+        make_rtp_packet("10.0.0.1", "10.0.0.2", 4000, 4002, 101, 320, 2222, payload_type=8),
+    ]
+    for packet, timestamp in zip(packets, (1.0, 1.02, 10.0, 10.02)):
+        packet.time = timestamp
+
+    streams = build_rtp_streams(packets)
+
+    assert detect_rtp_payload_type_change(streams) == []
+    assert detect_rtp_ssrc_change(streams) == []
 
 
 def test_engine_detects_rtp_timestamp_anomaly_and_stream_interruption():

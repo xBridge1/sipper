@@ -4,6 +4,12 @@ from ciper.engine import analyze_pcap
 from tests.test_rtp import make_rtp_packet
 
 
+def _timed_sip_packet(source, destination, payload, timestamp):
+    packet = IP(src=source, dst=destination) / UDP(sport=5060, dport=5060) / payload
+    packet.time = timestamp
+    return packet
+
+
 def test_engine_builds_call_summary_for_established_call_with_media_issue():
     packets = [
         IP(src="192.168.1.10", dst="192.168.1.20")
@@ -57,6 +63,73 @@ def test_engine_builds_call_summary_for_established_call_with_media_issue():
     assert summary["rtp_metrics"]["lost_packets"] == 1
     assert summary["rtp_metrics"]["loss_percent"] == 25.0
     assert summary["rtp_metrics"]["ssrcs"] == [1234]
+
+
+def test_call_summaries_do_not_share_rtp_between_sequential_calls_reusing_ports():
+    invite = (
+        b"INVITE sip:100@pbx.local SIP/2.0\r\nCall-ID: {call_id}\r\n"
+        b"CSeq: 1 INVITE\r\nContent-Type: application/sdp\r\n\r\n"
+        b"v=0\r\nc=IN IP4 192.168.1.10\r\nm=audio 4000 RTP/AVP 0 8\r\n"
+    )
+    ok = (
+        b"SIP/2.0 200 OK\r\nCall-ID: {call_id}\r\nCSeq: 1 INVITE\r\n"
+        b"Content-Type: application/sdp\r\n\r\nv=0\r\n"
+        b"c=IN IP4 192.168.1.20\r\nm=audio 4002 RTP/AVP 0 8\r\n"
+    )
+    ack = b"ACK sip:100@pbx.local SIP/2.0\r\nCall-ID: {call_id}\r\nCSeq: 1 ACK\r\n\r\n"
+    bye = b"BYE sip:100@pbx.local SIP/2.0\r\nCall-ID: {call_id}\r\nCSeq: 2 BYE\r\n\r\n"
+    packets = []
+    for call_id, base_time, ssrc, payload_type in (
+        (b"first-call", 1.0, 1111, 0),
+        (b"second-call", 10.0, 2222, 8),
+    ):
+        packets.extend(
+            [
+                _timed_sip_packet(
+                    "192.168.1.10",
+                    "192.168.1.20",
+                    invite.replace(b"{call_id}", call_id),
+                    base_time,
+                ),
+                _timed_sip_packet(
+                    "192.168.1.20",
+                    "192.168.1.10",
+                    ok.replace(b"{call_id}", call_id),
+                    base_time + 0.1,
+                ),
+                _timed_sip_packet(
+                    "192.168.1.10",
+                    "192.168.1.20",
+                    ack.replace(b"{call_id}", call_id),
+                    base_time + 0.2,
+                ),
+            ]
+        )
+        rtp_a = make_rtp_packet(
+            "192.168.1.10", "192.168.1.20", 4000, 4002, 100, 160, ssrc, payload_type=payload_type
+        )
+        rtp_b = make_rtp_packet(
+            "192.168.1.10", "192.168.1.20", 4000, 4002, 101, 320, ssrc, payload_type=payload_type
+        )
+        rtp_a.time = base_time + 0.3
+        rtp_b.time = base_time + 0.32
+        packets.extend(
+            [
+                rtp_a,
+                rtp_b,
+                _timed_sip_packet(
+                    "192.168.1.10",
+                    "192.168.1.20",
+                    bye.replace(b"{call_id}", call_id),
+                    base_time + 0.5,
+                ),
+            ]
+        )
+
+    summaries = {summary["call_id"]: summary for summary in analyze_pcap(packets)["call_summaries"]}
+
+    assert summaries["first-call"]["rtp_metrics"]["ssrcs"] == [1111]
+    assert summaries["second-call"]["rtp_metrics"]["ssrcs"] == [2222]
 
 
 def test_engine_builds_call_summary_for_failed_call():

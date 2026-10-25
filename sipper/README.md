@@ -13,7 +13,7 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 - Painel de resumo com protocolos, severidade, chamadas, RTP e trafego ao longo do tempo.
 - Fluxo visual SIP com direcao das mensagens e estados da chamada.
 - Exportacao de resultados em JSON, CSV e PDF.
-- Configuracoes persistentes para limites de jitter, perda e tamanho de captura.
+- Configuracoes persistentes para limites de jitter, perda, tamanho de captura e perfil da plataforma VoIP.
 - Processamento em streaming para reduzir o uso de memoria em arquivos grandes.
 - Cancelamento seguro de analises em andamento e log rotativo local.
 
@@ -34,6 +34,16 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 - Eventos de re-INVITE, hold e resume no resumo operacional da chamada.
 - Identificacao de sinalizacao fragmentada e cabecalhos SIP excessivamente grandes.
 - Leitura de SDP para enderecos de midia, codecs, RTCP, `rtcp-mux` e `mid`.
+
+### Compatibilidade FreeSWITCH
+
+- Perfil opcional ativado em **Configuracoes**, com filtro por IP ou rede do servidor monitorado.
+- Risco de oferta inicial `sendonly`, `recvonly`, `inactive` ou com porta de audio desativada.
+- Identidade `anonymous` correlacionada com `P-Asserted-Identity`, `P-Preferred-Identity`, `Remote-Party-ID` e `Privacy` sem equiparar identidade preferida a identidade afirmada.
+- Mapeamento de Request-URI para `destination_number` e de `To` para `sip_to_user`, com alerta de reescrita divergente por operadora ou SBC.
+- Validacao de `Session-Expires` e `Min-SE`, negociacao DTMF por `telephone-event` ou SIP `INFO` e endereco RTP usado em `remote_media_ip`.
+- Headers personalizados `X-*` apresentados como entradas `sip_h_*` que podem influenciar dialplan e legs encaminhados.
+- Risco combinado para chamadas interativas e `mod_callcenter`, sem tratar hold por re-INVITE como falha.
 
 ### RTP
 
@@ -73,7 +83,7 @@ python -m pip install -r requirements.txt
 python -m ciper.gui_main
 ```
 
-Na aplicacao, selecione um arquivo `.pcap` ou `.pcapng`, clique em **Analisar** e navegue pelas visoes de Resumo, SIP, RTP, Rede, Findings e Estatisticas. Use **Exportar** para gerar o relatorio da analise atual.
+Na aplicacao, selecione um arquivo `.pcap` ou `.pcapng`, clique em **Analisar** e navegue pelas visoes de Resumo, SIP, RTP, Rede, Findings e Estatisticas. Para verificacoes especificas, selecione **FreeSWITCH** e informe os IPs monitorados em **Configuracoes** antes da analise. Use **Exportar** para gerar o relatorio da analise atual.
 
 ### Linha de comando
 
@@ -101,10 +111,10 @@ O projeto inclui uma cadeia de distribuicao para Windows com PyInstaller e Inno 
 2. Ative o ambiente virtual e execute:
 
 ```powershell
-.\packaging\build.ps1 -Version 1.0.4
+.\packaging\build.ps1 -Version 1.1.0
 ```
 
-O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.0.4.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.0.4.exe.sha256`.
+O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.1.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.1.0.exe.sha256`.
 
 Para montar apenas o executavel, sem exigir o Inno Setup:
 
@@ -117,8 +127,8 @@ Para montar apenas o executavel, sem exigir o Inno Setup:
 Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow na raiz do repositorio (`.github/workflows/release-windows.yml`) executa os testes e publica o instalador `SIPPER-Setup-<versao>.exe`, seu checksum `.exe.sha256` e o pacote portatil `.zip`.
 
 ```powershell
-git tag v1.0.4
-git push origin v1.0.4
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 O acompanhamento fica na aba **Actions** do repositorio. Quando o workflow terminar, os arquivos estarao na aba **Releases**.

@@ -3,7 +3,13 @@ from itertools import chain
 from ciper.flows import build_tcp_flows, build_icmp_flows
 from ciper.fragmentation import build_ip_fragment_groups
 from ciper.rtp import build_rtp_streams
-from ciper.sip import build_sip_flows
+from ciper.sip import (
+    build_sip_flows,
+    get_sip_method_responses,
+    get_successful_invite_responses,
+    get_terminal_sip_method_errors,
+    has_matching_sip_ack,
+)
 from ciper.tls import build_tls_flows
 from ciper.udp_flows import build_udp_flows
 from ciper.pcap_reader import iter_pcap
@@ -12,6 +18,7 @@ from ciper.analysis_control import raise_if_cancelled
 from scapy.layers.inet import ICMP, IP, TCP, UDP
 from scapy.layers.inet6 import IPv6ExtHdrFragment
 from ciper.detectors.fragmentation import detect_ip_fragmentation
+from ciper.detectors.freeswitch import detect_freeswitch_compatibility
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
 from ciper.findings import Finding
 from ciper.references import attach_references
@@ -114,7 +121,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     udp_flows = build_udp_flows(udp_packets)
     icmp_flows = build_icmp_flows(icmp_packets)
     sip_flows = build_sip_flows(chain(tcp_packets, udp_packets))
-    rtp_streams = build_rtp_streams(udp_packets)
+    rtp_streams = build_rtp_streams(udp_packets, _get_rtp_clock_rates(sip_flows))
     fragment_groups = build_ip_fragment_groups(fragmented_packets)
     tls_flows = build_tls_flows(flows)
 
@@ -148,6 +155,10 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_sip_options_no_response(sip_flows))
     findings.extend(detect_sip_udp_fragmentation_risk(sip_flows))
     findings.extend(detect_sip_signaling_fragmentation(sip_flows, fragment_groups))
+    if settings.target_platform == "freeswitch":
+        findings.extend(
+            detect_freeswitch_compatibility(sip_flows, settings.target_platform_ips)
+        )
     findings.extend(detect_rtp_packet_loss(rtp_streams, settings.rtp_loss_high_threshold))
     findings.extend(detect_rtp_out_of_order(rtp_streams))
     findings.extend(detect_rtp_high_jitter(rtp_streams, settings.rtp_high_jitter_threshold))
@@ -178,6 +189,10 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
         "tls_flows": tls_flows,
         "findings": findings,
         "call_summaries": call_summaries,
+        "analysis_profile": {
+            "target_platform": settings.target_platform,
+            "target_platform_ips": settings.target_platform_ips,
+        },
         "analysis_stats": {
             "packet_count": packet_count,
             "tcp_packet_count": len(tcp_packets),
@@ -242,8 +257,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
 
     for flow in sip_flows.values():
         if (
-            flow.success_responses > 0
-            and flow.acknowledgements > 0
+            _call_is_established(flow)
             and _expects_media(flow)
             and not _get_related_rtp_streams(flow, rtp_streams)
         ):
@@ -257,6 +271,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                     description="SIP call signaling completed, but no RTP media stream was observed.",
                     evidence=[
                         f"Call-ID: {flow.call_id}",
+                        f"Dialog-Key: {flow.dialog_key}",
                         f"200 OK responses: {flow.success_responses}",
                         f"ACKs: {flow.acknowledgements}",
                         "RTP streams observed: 0",
@@ -267,8 +282,13 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                 )
             )
 
-    if rtp_streams and not sip_flows:
-        for stream in rtp_streams.values():
+    if rtp_streams:
+        for stream_key, stream in rtp_streams.items():
+            if any(
+                _get_related_rtp_streams(flow, {stream_key: stream})
+                for flow in sip_flows.values()
+            ):
+                continue
             correlated.append(
                 Finding(
                     type="rtp_without_sip",
@@ -294,17 +314,14 @@ def correlate_findings(findings, sip_flows, rtp_streams):
 
     for flow in sip_flows.values():
         if (
-            flow.success_responses <= 0
-            or flow.acknowledgements <= 0
+            not _call_is_established(flow)
             or not _expects_bidirectional_media(flow)
         ):
             continue
 
+        related_streams = _get_related_rtp_streams(flow, rtp_streams)
         for finding in one_way_findings:
-            if (
-                (finding.source_ip == flow.source_ip and finding.destination_ip == flow.destination_ip)
-                or (finding.source_ip == flow.destination_ip and finding.destination_ip == flow.source_ip)
-            ):
+            if _finding_matches_related_stream(finding, related_streams):
                 correlated.append(
                     Finding(
                         type="sip_call_one_way_audio",
@@ -315,6 +332,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                         description="SIP call was established, but RTP indicates probable one-way audio.",
                         evidence=[
                             f"Call-ID: {flow.call_id}",
+                            f"Dialog-Key: {flow.dialog_key}",
                             f"RTP finding: {finding.type}",
                         ],
                         recommendation=(
@@ -337,7 +355,8 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                 if stream.last_timestamp is None:
                     continue
 
-                if stream.last_timestamp > message.packet_time:
+                teardown_delay = stream.last_timestamp - message.packet_time
+                if teardown_delay > 0.1:
                     correlated.append(
                         Finding(
                             type="rtp_after_bye",
@@ -348,8 +367,10 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                             description="RTP media was observed after SIP BYE terminated the call.",
                             evidence=[
                                 f"Call-ID: {flow.call_id}",
+                                f"Dialog-Key: {flow.dialog_key}",
                                 f"BYE method observed: {message.method}",
                                 f"RTP SSRC: {stream.ssrc}",
+                                f"Media after BYE: {teardown_delay:.3f} s",
                             ],
                             recommendation=(
                                 "Check delayed media teardown, endpoint behavior after hangup, or media streams not stopping when signaling ends."
@@ -414,6 +435,16 @@ def build_call_summaries(sip_flows, rtp_streams, findings):
                 "media_direction": _get_media_negotiation_state(flow),
                 "has_rtp": bool(related_streams),
                 "rtp_stream_count": len(related_streams),
+                "rtp_stream_keys": [
+                    (
+                        stream.source_ip,
+                        stream.source_port,
+                        stream.destination_ip,
+                        stream.destination_port,
+                        stream.ssrc,
+                    )
+                    for stream in related_streams
+                ],
                 "start_time": _get_call_start_time(flow, related_streams),
                 "end_time": _get_call_end_time(flow, related_streams),
                 "duration": _get_call_duration(flow, related_streams),
@@ -456,6 +487,7 @@ def _get_related_rtp_streams(flow, rtp_streams):
         stream
         for stream in rtp_streams.values()
         if stream.source_ip in endpoint_ips and stream.destination_ip in endpoint_ips
+        and _stream_overlaps_sip_flow(flow, stream)
     ]
 
     if not audio_media:
@@ -474,17 +506,43 @@ def _get_related_rtp_streams(flow, rtp_streams):
     ]
 
 
+def _stream_overlaps_sip_flow(flow, stream):
+    if stream.first_timestamp is None or stream.last_timestamp is None or not flow.messages:
+        return True
+
+    flow_start = min(message.packet_time for message in flow.messages)
+    if stream.last_timestamp < flow_start - 1.0:
+        return False
+
+    terminal_times = [
+        message.packet_time
+        for message in flow.messages
+        if message.is_request and message.method in {"BYE", "CANCEL"}
+    ]
+    if terminal_times and stream.first_timestamp > min(terminal_times) + 1.0:
+        return False
+
+    return True
+
+
 def _get_related_call_findings(flow, findings, related_streams):
-    related_ssrcs = {stream.ssrc for stream in related_streams}
     related = []
 
     for finding in findings:
-        if _finding_mentions_call_id(finding, flow.call_id):
-            related.append(finding)
+        finding_dialog_keys = _get_finding_dialog_keys(finding)
+        if finding_dialog_keys:
+            if flow.dialog_key in finding_dialog_keys:
+                related.append(finding)
+            continue
+
+        finding_call_ids = _get_finding_call_ids(finding)
+        if finding_call_ids:
+            if flow.call_id in finding_call_ids:
+                related.append(finding)
             continue
 
         if finding.type.startswith("rtp_") or finding.type == "sip_call_one_way_audio":
-            if _finding_mentions_related_ssrc(finding, related_ssrcs):
+            if _finding_matches_related_stream(finding, related_streams):
                 related.append(finding)
             continue
 
@@ -497,15 +555,28 @@ def _get_related_call_findings(flow, findings, related_streams):
     return related
 
 
-def _finding_mentions_call_id(finding, call_id):
-    return f"Call-ID: {call_id}" in finding.evidence
-
-
-def _finding_mentions_related_ssrc(finding, related_ssrcs):
-    return any(
-        evidence == f"SSRC: {ssrc}"
+def _get_finding_dialog_keys(finding):
+    return {
+        evidence.removeprefix("Dialog-Key: ").strip()
         for evidence in finding.evidence
-        for ssrc in related_ssrcs
+        if evidence.startswith("Dialog-Key: ")
+    }
+
+
+def _get_finding_call_ids(finding):
+    return {
+        evidence.removeprefix("Call-ID: ").strip()
+        for evidence in finding.evidence
+        if evidence.startswith("Call-ID: ")
+    }
+
+
+def _finding_matches_related_stream(finding, related_streams):
+    return any(
+        finding.source_ip == stream.source_ip
+        and finding.destination_ip == stream.destination_ip
+        and f"SSRC: {stream.ssrc}" in finding.evidence
+        for stream in related_streams
     )
 
 
@@ -516,6 +587,24 @@ def _get_sdp_media(flow):
         messages_with_sdp = messages_with_sdp[-2:]
 
     return [media for message in messages_with_sdp for media in message.sdp_media]
+
+
+def _get_rtp_clock_rates(sip_flows):
+    clock_rates = {}
+
+    for flow in sip_flows.values():
+        for message in flow.messages:
+            for media in message.sdp_media:
+                if media.media_type != "audio":
+                    continue
+                address = media.connection_address or message.source_ip
+                for payload_type, clock_rate in media.clock_rates.items():
+                    key = (address, media.port, payload_type)
+                    clock_rates.setdefault(key, []).append(
+                        (float(message.packet_time), clock_rate)
+                    )
+
+    return clock_rates
 
 
 def _get_media_negotiation_state(flow):
@@ -584,8 +673,19 @@ def _get_call_duration(flow, related_streams):
 
 def _get_rtp_metrics(related_streams, codec_guesses=None):
     packet_count = sum(stream.packet_count for stream in related_streams)
+    unique_packet_count = sum(
+        getattr(stream, "unique_packet_count", 0) or stream.packet_count
+        for stream in related_streams
+    )
+    loss_observed_packet_count = sum(
+        getattr(stream, "loss_observed_packet_count", 0)
+        or getattr(stream, "unique_packet_count", 0)
+        or stream.packet_count
+        for stream in related_streams
+    )
+    duplicate_packets = sum(getattr(stream, "duplicate_packets", 0) for stream in related_streams)
     lost_packets = sum(stream.lost_packets for stream in related_streams)
-    expected_packets = packet_count + lost_packets
+    expected_packets = loss_observed_packet_count + lost_packets
     jitter_samples = [
         sample
         for stream in related_streams
@@ -600,6 +700,9 @@ def _get_rtp_metrics(related_streams, codec_guesses=None):
             key,
             {
                 "packet_count": 0,
+                "unique_packet_count": 0,
+                "loss_observed_packet_count": 0,
+                "duplicate_packets": 0,
                 "lost_packets": 0,
                 "out_of_order_packets": 0,
                 "interruptions": 0,
@@ -608,6 +711,13 @@ def _get_rtp_metrics(related_streams, codec_guesses=None):
             },
         )
         metric["packet_count"] += stream.packet_count
+        metric["unique_packet_count"] += getattr(stream, "unique_packet_count", 0) or stream.packet_count
+        metric["loss_observed_packet_count"] += (
+            getattr(stream, "loss_observed_packet_count", 0)
+            or getattr(stream, "unique_packet_count", 0)
+            or stream.packet_count
+        )
+        metric["duplicate_packets"] += getattr(stream, "duplicate_packets", 0)
         metric["lost_packets"] += stream.lost_packets
         metric["out_of_order_packets"] += stream.out_of_order_packets
         metric["interruptions"] += stream.interruptions
@@ -615,12 +725,15 @@ def _get_rtp_metrics(related_streams, codec_guesses=None):
         metric["duration"] = max(metric["duration"], stream.duration)
 
     for metric in directions.values():
-        expected = metric["packet_count"] + metric["lost_packets"]
+        expected = metric["loss_observed_packet_count"] + metric["lost_packets"]
         metric["loss_percent"] = (metric["lost_packets"] / expected * 100) if expected else 0.0
         metric["packet_rate"] = metric["packet_count"] / metric["duration"] if metric["duration"] else 0.0
 
     return {
         "packet_count": packet_count,
+        "unique_packet_count": unique_packet_count,
+        "loss_observed_packet_count": loss_observed_packet_count,
+        "duplicate_packets": duplicate_packets,
         "lost_packets": lost_packets,
         "loss_percent": (lost_packets / expected_packets * 100) if expected_packets else 0.0,
         "out_of_order_packets": sum(stream.out_of_order_packets for stream in related_streams),
@@ -741,24 +854,50 @@ def _get_media_quality(related_streams):
 
 
 def _get_signaling_state(flow):
-    if flow.error_responses > 0:
-        return "failed"
+    invite_errors = get_terminal_sip_method_errors(
+        flow,
+        "INVITE",
+        allow_unspecified=True,
+    )
+    invite_successes = _invite_responses(flow, 200, 300)
 
     if flow.cancels > 0:
         return "cancelled"
 
-    if flow.success_responses > 0 and flow.acknowledgements > 0:
+    if any(has_matching_sip_ack(flow, response) for response in invite_successes):
         if flow.byes > 0:
             return "terminated"
         return "established"
 
-    if flow.success_responses > 0 and flow.acknowledgements == 0:
+    if invite_successes:
         return "missing_ack"
 
-    if flow.invites > 0 and flow.responses == 0:
+    if invite_errors:
+        return "failed"
+
+    if flow.invites > 0 and not _invite_responses(flow, 100, 700):
         return "no_response"
 
     return "incomplete"
+
+
+def _invite_responses(flow, minimum, maximum):
+    return [
+        response
+        for response in get_sip_method_responses(
+            flow,
+            "INVITE",
+            allow_unspecified=True,
+        )
+        if minimum <= response.status_code < maximum
+    ]
+
+
+def _call_is_established(flow):
+    return any(
+        has_matching_sip_ack(flow, response)
+        for response in get_successful_invite_responses(flow)
+    )
 
 
 def _get_media_state(flow, related_streams, related_findings):
@@ -864,7 +1003,10 @@ def _get_codec_guesses(related_streams, sdp_media):
 
 
 def _get_key_evidence(flow, related_findings, related_streams):
-    evidence = [f"Call-ID: {flow.call_id}"]
+    evidence = [
+        f"Call-ID: {flow.call_id}",
+        f"Dialog-Key: {flow.dialog_key}",
+    ]
 
     if related_streams:
         evidence.append(f"RTP streams: {len(related_streams)}")

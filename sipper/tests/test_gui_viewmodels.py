@@ -73,6 +73,15 @@ def test_build_dashboard_viewmodel():
     assert viewmodel["findings"][0]["responsibility"] == "Em investigacao"
 
 
+def test_dashboard_uses_analyzed_packet_count_instead_of_protocol_sum():
+    viewmodel = build_dashboard_viewmodel(
+        {"protocols": {"RTP": 10, "SIP": 2}},
+        {"findings": [], "call_summaries": [], "analysis_stats": {"packet_count": 15}},
+    )
+
+    assert viewmodel["overview"]["packet_count"] == 15
+
+
 def test_build_dashboard_viewmodel_exposes_rtp_stream_metrics():
     stream = DummyRTPStream()
     packet_analysis = {"protocols": {"RTP": 10}}
@@ -103,3 +112,53 @@ def test_build_dashboard_viewmodel_exposes_rtp_stream_metrics():
     assert viewmodel["rtp_streams"][0]["codec_guesses"] == ["PCMA"]
     assert viewmodel["rtp_streams"][0]["call_id"] == "CALL-1"
     assert viewmodel["rtp_streams"][0]["payload_types"] == [0]
+
+
+def test_rtp_stream_viewmodel_uses_full_stream_key_when_ssrc_is_reused():
+    first_stream = DummyRTPStream()
+    second_stream = DummyRTPStream()
+    second_stream.source_ip = "192.168.1.30"
+    second_stream.destination_ip = "192.168.1.40"
+    second_stream.source_port = 5000
+    second_stream.destination_port = 5002
+    packet_analysis = {"protocols": {"RTP": 20}}
+    engine_result = {
+        "findings": [],
+        "call_summaries": [
+            {
+                "call_id": "CALL-1",
+                "dialog_key": "CALL-1:dialog",
+                "signaling_state": "established",
+                "media_state": "media_present",
+                "severity": "low",
+                "primary_issue": None,
+                "codec_guesses": ["PCMU"],
+                "source_ip": "192.168.1.10",
+                "destination_ip": "192.168.1.20",
+                "recommended_action": "",
+                "rtp_stream_keys": [("192.168.1.10", 4000, "192.168.1.20", 4002, 1234)],
+            },
+            {
+                "call_id": "CALL-2",
+                "dialog_key": "CALL-2:dialog",
+                "signaling_state": "established",
+                "media_state": "media_present",
+                "severity": "low",
+                "primary_issue": None,
+                "codec_guesses": ["PCMA"],
+                "source_ip": "192.168.1.30",
+                "destination_ip": "192.168.1.40",
+                "recommended_action": "",
+                "rtp_stream_keys": [("192.168.1.30", 5000, "192.168.1.40", 5002, 1234)],
+            },
+        ],
+        "rtp_streams": {"first": first_stream, "second": second_stream},
+    }
+
+    items = build_dashboard_viewmodel(packet_analysis, engine_result)["rtp_streams"]
+    by_source = {item["source"]: item for item in items}
+
+    assert by_source["192.168.1.10:4000"]["call_id"] == "CALL-1"
+    assert by_source["192.168.1.10:4000"]["codec_guesses"] == ["PCMU"]
+    assert by_source["192.168.1.30:5000"]["call_id"] == "CALL-2"
+    assert by_source["192.168.1.30:5000"]["codec_guesses"] == ["PCMA"]

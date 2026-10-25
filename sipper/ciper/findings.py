@@ -21,6 +21,15 @@ def describe_responsibility(finding):
     finding_type = finding.type
 
     if finding_type in {
+        "freeswitch_custom_header_input",
+        "freeswitch_routing_target_mismatch",
+    }:
+        return "Origem remota ou SBC", "medium", "O valor chegou no INVITE, mas pode ter sido inserido ou reescrito legitimamente por um SBC ou pela operadora."
+
+    if finding_type.startswith("freeswitch_"):
+        return "Origem remota", "high", "O INVITE recebido contem a condicao que pode afetar o processamento no FreeSWITCH."
+
+    if finding_type in {
         "tcp_reset",
         "tcp_handshake_reset",
         "sip_invalid_header",

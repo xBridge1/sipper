@@ -26,6 +26,45 @@ def test_parse_sip_invite_message():
     assert "Call-ID: call-123" in message.header_text
 
 
+def test_sip_message_findings_point_to_the_message_that_contains_the_problem():
+    oversized_header = b"X-Oversized: " + (b"a" * 1250) + b"\r\n"
+    packets = [
+        IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=5060, dport=5060)
+        / b"INVITE sip:100@pbx.local SIP/2.0\r\nCall-ID: response-problem\r\nCSeq: 1 INVITE\r\n\r\n",
+        IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=5060, dport=5060)
+        / (
+            b"SIP/2.0 200 OK\r\nCall-ID: response-problem\r\nCSeq: 1 INVITE\r\n"
+            b"Invalid header line\r\nContent-Length: 5\r\n"
+            + oversized_header
+            + b"\r\nx"
+        ),
+    ]
+
+    findings = {
+        finding.type: finding
+        for finding in analyze_pcap(packets)["findings"]
+        if finding.type in {
+            "sip_large_header",
+            "sip_header_fragmentation_risk",
+            "sip_udp_fragmentation_risk",
+            "sip_invalid_header",
+            "sip_content_length_mismatch",
+        }
+    }
+
+    assert set(findings) == {
+        "sip_large_header",
+        "sip_header_fragmentation_risk",
+        "sip_udp_fragmentation_risk",
+        "sip_invalid_header",
+        "sip_content_length_mismatch",
+    }
+    assert all(finding.source_ip == "192.168.1.20" for finding in findings.values())
+    assert all(finding.destination_ip == "192.168.1.10" for finding in findings.values())
+
+
 def test_parse_sip_message_validates_header_structure_and_content_length():
     packet = (
         IP(src="192.168.1.10", dst="192.168.1.20")

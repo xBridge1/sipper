@@ -1,6 +1,8 @@
 from ciper.findings import Finding
 
-from scapy.layers.inet import IP, TCP
+from scapy.layers.inet import TCP
+
+from ciper.network import get_ip_addresses
 
 
 def detect_syn_failures(flows):
@@ -188,17 +190,19 @@ def detect_tcp_handshake_reset(flows):
         if reset_packet is None:
             continue
 
+        source_ip, destination_ip = get_ip_addresses(reset_packet)
+
         findings.append(
             Finding(
                 type="tcp_handshake_reset",
                 severity="high",
                 confidence=0.95,
-                source_ip=reset_packet[IP].src,
-                destination_ip=reset_packet[IP].dst,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
                 description="TCP connection setup was reset before completion.",
                 evidence=[
-                    f"Source: {reset_packet[IP].src}:{reset_packet[TCP].sport}",
-                    f"Destination: {reset_packet[IP].dst}:{reset_packet[TCP].dport}",
+                    f"Source: {source_ip}:{reset_packet[TCP].sport}",
+                    f"Destination: {destination_ip}:{reset_packet[TCP].dport}",
                     "RST observed during handshake: yes",
                 ],
                 recommendation=(
@@ -228,17 +232,19 @@ def detect_tcp_resets(flows):
         if reset_packet is None:
             continue
 
+        source_ip, destination_ip = get_ip_addresses(reset_packet)
+
         findings.append(
             Finding(
                 type="tcp_reset",
                 severity="high",
                 confidence=0.95,
-                source_ip=reset_packet[IP].src,
-                destination_ip=reset_packet[IP].dst,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
                 description="TCP connection was reset unexpectedly.",
                 evidence=[
-                    f"Source: {reset_packet[IP].src}:{reset_packet[TCP].sport}",
-                    f"Destination: {reset_packet[IP].dst}:{reset_packet[TCP].dport}",
+                    f"Source: {source_ip}:{reset_packet[TCP].sport}",
+                    f"Destination: {destination_ip}:{reset_packet[TCP].dport}",
                     "RST observed: yes",
                 ],
                 recommendation=(

@@ -49,6 +49,7 @@ from ciper.settings import AnalysisSettings, load_settings, save_settings
 from ciper.sip import parse_sip_message
 from ciper.voip_quality import jitter_observation, mos_observation, packet_loss_observation, quality_reference_note
 from ciper.logging_setup import configure_logging
+from ciper.network import get_network_layer
 from ciper.updater import CURRENT_VERSION, check_for_update
 from scapy.layers.inet import ICMP, IP, TCP, UDP
 
@@ -213,9 +214,9 @@ def _classify_packet_for_traffic(packet):
         return "SIP"
     if parse_rtp_packet(packet) is not None:
         return "RTP"
-    if IP in packet and TCP in packet:
+    if get_network_layer(packet) is not None and TCP in packet:
         return "TCP"
-    if IP in packet and UDP in packet:
+    if get_network_layer(packet) is not None and UDP in packet:
         return "UDP"
     if IP in packet and ICMP in packet:
         return "ICMP"
@@ -775,6 +776,7 @@ class SipperWindow(QMainWindow):
                     ("Todas as chamadas", "SIP", "sip", "all"),
                     ("Falhas de sinalizacao", "SIP", "sip", "errors"),
                     ("Headers e MTU", "SIP", "sip", "headers"),
+                    ("Compatibilidade", "SIP", "sip", "freeswitch"),
                 ],
             ),
             (
@@ -1057,6 +1059,7 @@ class SipperWindow(QMainWindow):
         self.sip_filter.addItem("Com erro de sinalizacao", "errors")
         self.sip_filter.addItem("Headers e MTU", "headers")
         self.sip_filter.addItem("Analise de chamadas", "analysis")
+        self.sip_filter.addItem("Compatibilidade FreeSWITCH", "freeswitch")
         self.sip_filter.currentIndexChanged.connect(self._on_sip_filter_changed)
         self.sip_search = QLineEdit()
         self.sip_search.setPlaceholderText("Buscar Call-ID ou IP")
@@ -1262,6 +1265,18 @@ class SipperWindow(QMainWindow):
         self.settings_max_pcap_size.setRange(1, 10240)
         self.settings_max_pcap_size.setSuffix(" MB")
 
+        self.settings_platform = QComboBox()
+        self.settings_platform.addItem("SIP/RTP generico", "generic")
+        self.settings_platform.addItem("FreeSWITCH", "freeswitch")
+        self.settings_platform.currentIndexChanged.connect(
+            self._update_platform_settings_state
+        )
+
+        self.settings_platform_ips = QLineEdit()
+        self.settings_platform_ips.setPlaceholderText(
+            "Ex.: 10.0.0.20, 10.0.0.21 ou 10.0.0.0/24"
+        )
+
         self.settings_export_directory = QLineEdit()
         self.settings_export_directory.setReadOnly(True)
         self.settings_export_directory_button = QPushButton("Escolher pasta")
@@ -1279,6 +1294,8 @@ class SipperWindow(QMainWindow):
             ("Perda RTP para severidade alta", self.settings_loss),
             ("Maximo de pontos no grafico", self.settings_traffic_points),
             ("Tamanho maximo do PCAP", self.settings_max_pcap_size),
+            ("Plataforma VoIP", self.settings_platform),
+            ("IPs da plataforma monitorada", self.settings_platform_ips),
             ("Pasta padrao para relatorios", export_row),
         ]
         for row, (label, widget) in enumerate(rows):
@@ -1982,15 +1999,30 @@ class SipperWindow(QMainWindow):
         calls = self._filter_sip_calls(all_calls, filter_name)
         calls = self._filter_calls_by_search(calls, all_calls, self.sip_search.text(), self.sip_time_range.text())
         sip_findings = self._filter_sip_findings(
-            [finding for finding in self.last_viewmodel["findings"] if finding["type"].startswith("sip_")],
+            [
+                finding
+                for finding in self.last_viewmodel["findings"]
+                if finding["type"].startswith(("sip_", "freeswitch_"))
+            ],
             filter_name,
         )
         established = sum(1 for call in calls if call["signaling_state"] == "established")
         degraded = sum(1 for call in calls if call["severity"] in {"high", "medium"})
+        analysis_profile = self.last_viewmodel.get("analysis_profile", {})
+        platform = analysis_profile.get("target_platform", "generic")
+        platform_ips = analysis_profile.get("target_platform_ips", "")
+        profile_name = "FreeSWITCH" if platform == "freeswitch" else "SIP/RTP generico"
+        profile_scope = (
+            platform_ips or "todos os destinos SIP"
+            if platform == "freeswitch"
+            else "nao aplicavel"
+        )
         self.sip_calls.set_title(self._sip_filter_title(filter_name))
         self.sip_state_text.setPlainText(
             "\n".join(
                 [
+                    f"Perfil de compatibilidade: {profile_name}",
+                    f"IPs monitorados: {profile_scope}",
                     f"Fluxos SIP correlacionados: {len(calls)}",
                     f"Chamadas estabelecidas: {established}",
                     f"Chamadas com risco: {degraded}",
@@ -2011,6 +2043,15 @@ class SipperWindow(QMainWindow):
                 for call in calls
                 if call["signaling_state"] in {"failed", "cancelled", "missing_ack", "no_response", "incomplete"}
             ]
+        if filter_name == "freeswitch":
+            return [
+                call
+                for call in calls
+                if any(
+                    finding_type.startswith("freeswitch_")
+                    for finding_type in call.get("finding_types", [])
+                )
+            ]
         return calls
 
     def _filter_sip_findings(self, findings, filter_name):
@@ -2024,6 +2065,12 @@ class SipperWindow(QMainWindow):
                     token in finding["type"]
                     for token in ("header", "content_length", "fragmentation")
                 )
+            ]
+        if filter_name == "freeswitch":
+            return [
+                finding
+                for finding in findings
+                if finding["type"].startswith("freeswitch_")
             ]
         return findings
 
@@ -2077,6 +2124,7 @@ class SipperWindow(QMainWindow):
             "errors": "Falhas de sinalizacao",
             "headers": "Headers SIP e MTU",
             "analysis": "Analise da chamada",
+            "freeswitch": "Compatibilidade FreeSWITCH",
         }
         return titles.get(filter_name, "SIP Flows")
 
@@ -2395,7 +2443,18 @@ class SipperWindow(QMainWindow):
         self.settings_loss.setValue(self.analysis_settings.rtp_loss_high_threshold)
         self.settings_traffic_points.setValue(self.analysis_settings.max_traffic_points)
         self.settings_max_pcap_size.setValue(self.analysis_settings.max_pcap_size_mb)
+        self._select_filter_value(
+            self.settings_platform,
+            self.analysis_settings.target_platform,
+        )
+        self.settings_platform_ips.setText(self.analysis_settings.target_platform_ips)
+        self._update_platform_settings_state()
         self.settings_export_directory.setText(self.analysis_settings.export_directory)
+
+    def _update_platform_settings_state(self):
+        self.settings_platform_ips.setEnabled(
+            self.settings_platform.currentData() == "freeswitch"
+        )
 
     def _choose_export_directory(self):
         directory = QFileDialog.getExistingDirectory(
@@ -2413,6 +2472,8 @@ class SipperWindow(QMainWindow):
             max_traffic_points=self.settings_traffic_points.value(),
             max_pcap_size_mb=self.settings_max_pcap_size.value(),
             export_directory=self.settings_export_directory.text().strip() or str(Path.home()),
+            target_platform=self.settings_platform.currentData() or "generic",
+            target_platform_ips=self.settings_platform_ips.text().strip(),
         )
         try:
             save_settings(self.analysis_settings)
@@ -2477,6 +2538,8 @@ class SipperWindow(QMainWindow):
         self._set_status(f"Atualizacao {update.version} disponivel")
 
     def _cleanup_update_worker(self):
+        if self.update_thread is not None:
+            self.update_thread.deleteLater()
         self.update_worker = None
         self.update_thread = None
 

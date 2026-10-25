@@ -11,7 +11,10 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
 
     return {
         "overview": {
-            "packet_count": sum(packet_analysis["protocols"].values()),
+            "packet_count": engine_result.get("analysis_stats", {}).get(
+                "packet_count",
+                sum(packet_analysis["protocols"].values()),
+            ),
             "protocol_count": len(protocol_items),
             "finding_count": len(findings),
             "call_count": len(call_summaries),
@@ -40,6 +43,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
             "medium": severity_counts.get("medium", 0),
             "low": severity_counts.get("low", 0),
         },
+        "analysis_profile": dict(engine_result.get("analysis_profile", {})),
         "calls": [
             {
                 "call_id": summary["call_id"],
@@ -54,6 +58,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "media_quality_metrics": summary.get("media_quality_metrics", {}),
                 "severity": summary["severity"],
                 "primary_issue": summary["primary_issue"],
+                "finding_types": list(summary.get("finding_types", [])),
                 "codec_guesses": summary["codec_guesses"],
                 "key_evidence": summary.get("key_evidence", []),
                 "recommended_action": summary["recommended_action"],
@@ -110,11 +115,21 @@ def _build_protocol_items(protocol_counter):
 
 
 def _build_rtp_stream_items(rtp_streams, call_summaries):
+    metadata_by_stream_key = {}
     codecs_by_ssrc = {}
     call_id_by_ssrc = {}
     dialog_key_by_ssrc = {}
 
     for summary in call_summaries:
+        stream_keys = summary.get("rtp_stream_keys", [])
+        for stream_key in stream_keys:
+            metadata_by_stream_key[tuple(stream_key)] = (
+                summary.get("codec_guesses", []),
+                summary["call_id"],
+                summary.get("dialog_key", summary["call_id"]),
+            )
+        if stream_keys:
+            continue
         for ssrc in summary.get("rtp_metrics", {}).get("ssrcs", []):
             codecs_by_ssrc[ssrc] = summary.get("codec_guesses", [])
             call_id_by_ssrc[ssrc] = summary["call_id"]
@@ -123,13 +138,36 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
     items = []
 
     for stream in rtp_streams.values():
-        expected_packets = stream.packet_count + stream.lost_packets
+        stream_key = (
+            stream.source_ip,
+            stream.source_port,
+            stream.destination_ip,
+            stream.destination_port,
+            stream.ssrc,
+        )
+        metadata = metadata_by_stream_key.get(stream_key)
+        if metadata is None:
+            metadata = (
+                codecs_by_ssrc.get(stream.ssrc, stream.codec_guesses),
+                call_id_by_ssrc.get(stream.ssrc),
+                dialog_key_by_ssrc.get(stream.ssrc),
+            )
+        codec_guesses, call_id, dialog_key = metadata
+        unique_packet_count = getattr(stream, "unique_packet_count", 0) or stream.packet_count
+        loss_observed_packet_count = (
+            getattr(stream, "loss_observed_packet_count", 0)
+            or unique_packet_count
+        )
+        expected_packets = loss_observed_packet_count + stream.lost_packets
         items.append(
             {
                 "source": f"{stream.source_ip}:{stream.source_port}",
                 "destination": f"{stream.destination_ip}:{stream.destination_port}",
                 "ssrc": stream.ssrc,
                 "packet_count": stream.packet_count,
+                "unique_packet_count": unique_packet_count,
+                "loss_observed_packet_count": loss_observed_packet_count,
+                "duplicate_packets": getattr(stream, "duplicate_packets", 0),
                 "lost_packets": stream.lost_packets,
                 "loss_percent": (stream.lost_packets / expected_packets * 100) if expected_packets else 0.0,
                 "average_jitter": stream.average_jitter,
@@ -137,10 +175,10 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
                 "out_of_order_packets": stream.out_of_order_packets,
                 "interruptions": stream.interruptions,
                 "duration": stream.duration,
-                "codec_guesses": codecs_by_ssrc.get(stream.ssrc, stream.codec_guesses),
+                "codec_guesses": codec_guesses,
                 "payload_types": sorted(getattr(stream, "payload_types", set())),
-                "call_id": call_id_by_ssrc.get(stream.ssrc),
-                "dialog_key": dialog_key_by_ssrc.get(stream.ssrc),
+                "call_id": call_id,
+                "dialog_key": dialog_key,
             }
         )
 
@@ -149,6 +187,8 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
 
 
 def _finding_category(finding_type):
+    if finding_type.startswith("freeswitch_"):
+        return "Compatibilidade FreeSWITCH"
     if finding_type.startswith("tls_"):
         return "TLS e seguranca"
     if finding_type.startswith("rtp_"):

@@ -5,6 +5,7 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 from ciper.rtp import parse_rtp_packet
 from ciper.sip import parse_sip_message
 from ciper.analysis_control import raise_if_cancelled
+from ciper.network import get_ip_addresses, get_network_layer
 
 
 class PacketAnalysisAccumulator:
@@ -17,11 +18,10 @@ class PacketAnalysisAccumulator:
 
     def add(self, packet):
         raise_if_cancelled(self.cancel_event)
-        if IP not in packet:
+        if get_network_layer(packet) is None:
             return
 
-        source_ip = packet[IP].src
-        destination_ip = packet[IP].dst
+        source_ip, destination_ip = get_ip_addresses(packet)
 
         self.source_ips[source_ip] += 1
         self.destination_ips[destination_ip] += 1

@@ -3,9 +3,10 @@ from dataclasses import dataclass, field
 from ciper.tcp_reassembly import reassemble_tcp_payloads
 
 
-TLS_CONTENT_TYPES = {20, 21, 22, 23}
+TLS_CONTENT_TYPES = {20, 21, 22, 23, 24}
 TLS_COMMON_PORTS = {443, 465, 636, 993, 995, 5061, 8443}
 TLS_VERSION_NAMES = {
+    0x0300: "SSL 3.0",
     0x0301: "TLS 1.0",
     0x0302: "TLS 1.1",
     0x0303: "TLS 1.2",
@@ -174,7 +175,7 @@ def _record_legacy_version(tls_flow, body):
     if len(body) < 2:
         return
     version = (body[0] << 8) | body[1]
-    if version in {0x0301, 0x0302}:
+    if version in {0x0300, 0x0301, 0x0302}:
         tls_flow.legacy_versions.add(TLS_VERSION_NAMES[version])
 
 

@@ -1,4 +1,5 @@
 from ciper.findings import Finding
+from scapy.layers.inet import ICMP, IP
 
 
 UNREACHABLE_CODE_DETAILS = {
@@ -75,6 +76,9 @@ def detect_icmp_unreachable(flows):
         codes = sorted(set(flow.unreachable_codes)) or [None]
 
         for code in codes:
+            packet = _first_icmp_packet(flow, 3, code)
+            source_ip = packet[IP].src if packet is not None else flow.source_ip
+            destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
             if code is not None:
                 finding_type, description, recommendation = UNREACHABLE_CODE_DETAILS.get(
                     code,
@@ -94,8 +98,8 @@ def detect_icmp_unreachable(flows):
                 )
 
             evidence = [
-                f"Source: {flow.source_ip}",
-                f"Destination: {flow.destination_ip}",
+                f"Source: {source_ip}",
+                f"Destination: {destination_ip}",
                 f"Unreachable messages: {flow.unreachable_messages}",
             ]
 
@@ -107,8 +111,8 @@ def detect_icmp_unreachable(flows):
                     type=finding_type,
                     severity="high",
                     confidence=0.95,
-                    source_ip=flow.source_ip,
-                    destination_ip=flow.destination_ip,
+                    source_ip=source_ip,
+                    destination_ip=destination_ip,
                     description=description,
                     evidence=evidence,
                     recommendation=recommendation,
@@ -125,17 +129,21 @@ def detect_icmp_time_exceeded(flows):
         if flow.time_exceeded_messages == 0:
             continue
 
+        packet = _first_icmp_packet(flow, 11)
+        source_ip = packet[IP].src if packet is not None else flow.source_ip
+        destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+
         findings.append(
             Finding(
                 type="icmp_time_exceeded",
                 severity="high",
                 confidence=0.95,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
                 description="ICMP Time Exceeded was observed.",
                 evidence=[
-                    f"Source: {flow.source_ip}",
-                    f"Destination: {flow.destination_ip}",
+                    f"Source: {source_ip}",
+                    f"Destination: {destination_ip}",
                     f"Time Exceeded messages: {flow.time_exceeded_messages}",
                 ],
                 recommendation=(
@@ -155,17 +163,21 @@ def detect_icmp_redirect(flows):
         if flow.redirect_messages == 0:
             continue
 
+        packet = _first_icmp_packet(flow, 5)
+        source_ip = packet[IP].src if packet is not None else flow.source_ip
+        destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+
         findings.append(
             Finding(
                 type="icmp_redirect",
                 severity="medium",
                 confidence=0.90,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
                 description="ICMP Redirect was observed.",
                 evidence=[
-                    f"Source: {flow.source_ip}",
-                    f"Destination: {flow.destination_ip}",
+                    f"Source: {source_ip}",
+                    f"Destination: {destination_ip}",
                     f"Redirect messages: {flow.redirect_messages}",
                 ],
                 recommendation=(
@@ -184,17 +196,21 @@ def detect_icmp_parameter_problem(flows):
         if flow.parameter_problem_messages == 0:
             continue
 
+        packet = _first_icmp_packet(flow, 12)
+        source_ip = packet[IP].src if packet is not None else flow.source_ip
+        destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+
         findings.append(
             Finding(
                 type="icmp_parameter_problem",
                 severity="high",
                 confidence=0.95,
-                source_ip=flow.source_ip,
-                destination_ip=flow.destination_ip,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
                 description="ICMP Parameter Problem was observed.",
                 evidence=[
-                    f"Source: {flow.source_ip}",
-                    f"Destination: {flow.destination_ip}",
+                    f"Source: {source_ip}",
+                    f"Destination: {destination_ip}",
                     f"Parameter problem messages: {flow.parameter_problem_messages}",
                 ],
                 recommendation=(
@@ -204,3 +220,17 @@ def detect_icmp_parameter_problem(flows):
         )
 
     return findings
+
+
+def _first_icmp_packet(flow, icmp_type, code=None):
+    return next(
+        (
+            packet
+            for packet in flow.packets
+            if IP in packet
+            and ICMP in packet
+            and packet[ICMP].type == icmp_type
+            and (code is None or packet[ICMP].code == code)
+        ),
+        None,
+    )

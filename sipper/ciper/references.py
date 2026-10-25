@@ -18,6 +18,46 @@ SIP_REFERENCE = {
     "url": "https://datatracker.ietf.org/doc/html/rfc3261",
     "scope": "INVITE, respostas SIP, ACK, BYE, CANCEL, headers e Call-ID.",
 }
+SDP_REFERENCE = {
+    "title": "RFC 3264 - An Offer/Answer Model with SDP",
+    "url": "https://datatracker.ietf.org/doc/html/rfc3264",
+    "scope": "Direcoes sendrecv, sendonly, recvonly e inactive em ofertas e respostas SDP.",
+}
+FREESWITCH_INBOUND_REFERENCE = {
+    "title": "FreeSWITCH - Inbound Calls and the Public Context",
+    "url": "https://developer.signalwire.com/freeswitch/dialplan/public-context/",
+    "scope": "Mapeamento de From, P-Asserted-Identity e Remote-Party-ID para identidade da chamada.",
+}
+FREESWITCH_SOFIA_REFERENCE = {
+    "title": "FreeSWITCH - SIP Profiles with Sofia",
+    "url": "https://developer.signalwire.com/freeswitch/users-and-endpoints/sip-profiles/",
+    "scope": "Processamento de INVITE, headers, SDP e comportamento de hold no mod_sofia.",
+}
+FREESWITCH_VARIABLES_REFERENCE = {
+    "title": "FreeSWITCH - Channel Variables Catalog",
+    "url": "https://developer.signalwire.com/freeswitch/reference/channel-variables/",
+    "scope": "Variaveis SIP, identidade, DTMF, endpoints de midia e headers recebidos como sip_h_.",
+}
+FREESWITCH_CALLCENTER_REFERENCE = {
+    "title": "FreeSWITCH - Queues and mod_callcenter",
+    "url": "https://developer.signalwire.com/freeswitch/applications/call-queues/",
+    "scope": "Filas, agentes e processamento de chamadas pelo mod_callcenter.",
+}
+FREESWITCH_AUDIO_REFERENCE = {
+    "title": "FreeSWITCH - No Audio and One-Way Audio",
+    "url": "https://developer.signalwire.com/freeswitch/troubleshooting/audio/",
+    "scope": "Diagnostico de enderecos SDP, NAT, ext-rtp-ip, ausencia e assimetria de RTP.",
+}
+SIP_TIMER_REFERENCE = {
+    "title": "RFC 4028 - Session Timers in SIP",
+    "url": "https://datatracker.ietf.org/doc/html/rfc4028",
+    "scope": "Session-Expires, Min-SE, refresh de sessao e intervalo minimo de 90 segundos.",
+}
+DTMF_REFERENCE = {
+    "title": "RFC 4733 - Telephony Events over RTP",
+    "url": "https://datatracker.ietf.org/doc/html/rfc4733",
+    "scope": "Negociacao e transporte de eventos DTMF por RTP usando telephone-event.",
+}
 RTP_REFERENCE = {
     "title": "RFC 3550 - RTP: A Transport Protocol for Real-Time Applications",
     "url": "https://datatracker.ietf.org/doc/html/rfc3550",
@@ -46,6 +86,24 @@ VOIP_QOS_REFERENCE = {
 
 
 def references_for_finding_type(finding_type):
+    if finding_type.startswith("freeswitch_"):
+        references = [FREESWITCH_SOFIA_REFERENCE]
+        if any(token in finding_type for token in ("identity", "callcenter", "routing")):
+            references.append(FREESWITCH_INBOUND_REFERENCE)
+        if any(token in finding_type for token in ("header", "dtmf", "identity")):
+            references.append(FREESWITCH_VARIABLES_REFERENCE)
+        if any(token in finding_type for token in ("offer", "callcenter", "media")):
+            references.append(SDP_REFERENCE)
+        if "callcenter" in finding_type:
+            references.append(FREESWITCH_CALLCENTER_REFERENCE)
+        if "timer" in finding_type:
+            references.append(SIP_TIMER_REFERENCE)
+        if "dtmf" in finding_type:
+            references.append(DTMF_REFERENCE)
+        if "media" in finding_type:
+            references.append(FREESWITCH_AUDIO_REFERENCE)
+        return references
+
     if finding_type.startswith("tcp_"):
         return [TCP_REFERENCE]
 
