@@ -2,9 +2,23 @@
 
 > **SIP PCAP Insights** - analise offline de capturas PCAP para diagnostico de rede e VoIP.
 
+[![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
+[![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
+![Tests](https://img.shields.io/badge/tests-193%20passing-brightgreen)
+
 ![SIPPER](sipper/logo/splash.png)
 
 O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de rede, sinalizacao SIP e midia RTP. Ele identifica evidencias, aponta origem e destino, classifica severidade e apresenta recomendacoes para acelerar a investigacao de chamadas.
+
+## Download
+
+Versao atual: **SIPPER 1.1.0**.
+
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-portable-1.1.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.1.0)
 
 ## Destaques
 
@@ -13,7 +27,7 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 - Painel de resumo com protocolos, severidade, chamadas, RTP e trafego ao longo do tempo.
 - Fluxo visual SIP com direcao das mensagens e estados da chamada.
 - Exportacao de resultados em JSON, CSV e PDF.
-- Configuracoes persistentes para limites de jitter, perda e tamanho de captura.
+- Configuracoes persistentes para limites de jitter, perda, tamanho de captura e perfil da plataforma VoIP.
 - Processamento em streaming para reduzir o uso de memoria em arquivos grandes.
 - Cancelamento seguro de analises em andamento e log rotativo local.
 
@@ -30,16 +44,30 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 - Correlacao por `Call-ID`, origem, destino, estados e duracao da chamada.
 - Mensagens `INVITE`, respostas `1xx`, `2xx`, `ACK`, `BYE` e `CANCEL`.
-- Erros SIP `4xx`, `5xx` e `6xx`, timeout de INVITE e `200 OK` sem ACK.
+- Erros SIP `4xx`, `5xx` e `6xx`, timeout de INVITE, `200 OK` sem ACK e falhas de `REGISTER`, `REFER` e `OPTIONS`.
+- Eventos de re-INVITE, hold e resume no resumo operacional da chamada.
 - Identificacao de sinalizacao fragmentada e cabecalhos SIP excessivamente grandes.
 - Leitura de SDP para enderecos de midia, codecs, RTCP, `rtcp-mux` e `mid`.
+
+### Compatibilidade FreeSWITCH
+
+- Perfil opcional limitado aos IPs ou redes configurados pelo usuario.
+- Riscos relacionados a ofertas SDP `sendonly`, `recvonly`, `inactive` e midia desativada.
+- Analise de identidade anonymous, headers de identidade, Request-URI, session timers, DTMF e enderecos RTP.
+- Alertas de compatibilidade para dialplan, `mod_sofia`, `mod_callcenter` e variaveis `sip_h_*`.
 
 ### RTP
 
 - Streams por SSRC, endpoints, portas, codec estimado e duracao.
-- Packet loss, jitter elevado, pacotes fora de ordem e anomalias de timestamp.
+- Packet loss, jitter RFC 3550, MOS estimado, pacotes fora de ordem e anomalias de timestamp.
 - Interrupcoes de stream, mudancas de payload type e SSRC.
 - Provavel audio em uma via e correlacao entre qualidade de midia e chamada SIP.
+
+### TLS e fragmentacao
+
+- ClientHello, ServerHello, alertas fatais, versoes legadas, SNI e cipher suites.
+- Deteccao de RC4, 3DES, records malformados e falhas de resposta TLS.
+- Fragmentacao IPv4/IPv6 incompleta, sobreposta ou duplicada e riscos de MTU no SIP.
 
 ## Requisitos
 
@@ -47,11 +75,11 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 - Python 3.12+
 - Dependencias listadas em `requirements.txt`
 
-## Instalacao
+## Desenvolvimento local
 
 ```powershell
-git clone <url-do-repositorio>
-cd sipper
+git clone https://github.com/xBridge1/sipper.git SIPPER-repo
+cd SIPPER-repo\sipper
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -83,7 +111,7 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-Os testes cobrem deteccoes TCP, UDP, ICMP, SIP e RTP, correlacoes do engine, relatorios, configuracoes, cancelamento e leitura de PCAP em streaming.
+A versao 1.1.0 possui **193 testes automatizados** para TCP, UDP, ICMP, SIP, RTP, TLS, fragmentacao, FreeSWITCH, correlacoes, relatorios, configuracoes, atualizador e leitura de PCAP em streaming.
 
 ## Estrutura
 
@@ -109,6 +137,7 @@ As conclusoes sao baseadas no que foi efetivamente capturado. Ausencia de trafeg
 
 ## Proximos passos
 
-- Empacotamento do aplicativo como EXE para distribuicao no Windows.
-- Evolucao de correlacao SIP/SDP/RTP para cenarios mais complexos.
-- Ampliacao da cobertura de PCAPs reais e testes de regressao.
+- Assinatura Authenticode do instalador para distribuicao corporativa.
+- Ampliacao da cobertura de PCAPs reais anonimizados e testes de regressao.
+- Correlacao SIP/SDP/RTP para cenarios com SBC, NAT, ICE e multiplas midias.
+- Perfis opcionais para outras plataformas VoIP, mantendo o FreeSWITCH como primeira implementacao.

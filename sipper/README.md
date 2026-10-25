@@ -2,9 +2,23 @@
 
 > **SIP PCAP Insights** - analise offline de capturas PCAP para diagnostico de rede e VoIP.
 
+[![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
+[![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
+![Tests](https://img.shields.io/badge/tests-193%20passing-brightgreen)
+
 ![SIPPER](logo/splash.png)
 
 O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de rede, sinalizacao SIP e midia RTP. Ele identifica evidencias, aponta origem e destino, classifica severidade e apresenta recomendacoes para acelerar a investigacao de chamadas.
+
+## Download
+
+Versao atual: **SIPPER 1.1.0**.
+
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-portable-1.1.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.1.0)
 
 ## Destaques
 
@@ -65,11 +79,11 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 - Python 3.12+
 - Dependencias listadas em `requirements.txt`
 
-## Instalacao
+## Desenvolvimento local
 
 ```powershell
-git clone <url-do-repositorio>
-cd sipper
+git clone https://github.com/xBridge1/sipper.git SIPPER-repo
+cd SIPPER-repo\sipper
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -101,7 +115,7 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-Os testes cobrem deteccoes TCP, UDP, ICMP, SIP, RTP e TLS, correlacoes do engine, relatorios, configuracoes, cancelamento e leitura de PCAP em streaming. O corpus sintetico reproduzivel esta em `tests/pcaps/`.
+A versao 1.1.0 possui **193 testes automatizados**. Eles cobrem deteccoes TCP, UDP, ICMP, SIP, RTP, TLS, fragmentacao e FreeSWITCH, alem de correlacoes do engine, relatorios, configuracoes, atualizador, cancelamento e leitura de PCAP em streaming. O corpus sintetico reproduzivel esta em `tests/pcaps/`.
 
 ## Instalador Windows
 
@@ -164,6 +178,7 @@ As conclusoes sao baseadas no que foi efetivamente capturado. Ausencia de trafeg
 
 ## Proximos passos
 
-- Empacotamento do aplicativo como EXE para distribuicao no Windows.
+- Assinatura Authenticode do instalador para distribuicao corporativa.
 - Ampliacao da cobertura de PCAPs reais anonimizados e testes de regressao.
 - Correlacao SIP/SDP/RTP para cenarios com SBC, NAT, ICE e multiplas midias.
+- Perfis opcionais para outras plataformas VoIP, mantendo o FreeSWITCH como primeira implementacao.
