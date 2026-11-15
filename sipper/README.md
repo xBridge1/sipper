@@ -13,12 +13,12 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 ## Download
 
-Versao atual: **SIPPER 1.1.0**.
+Versao atual: **SIPPER 1.2.0**.
 
-- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe)
-- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-portable-1.1.0.zip)
-- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe.sha256)
-- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.1.0)
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-Setup-1.2.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-portable-1.2.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-Setup-1.2.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.2.0)
 
 ## Destaques
 
@@ -148,10 +148,10 @@ O projeto inclui uma cadeia de distribuicao para Windows com PyInstaller e Inno 
 2. Ative o ambiente virtual e execute:
 
 ```powershell
-.\packaging\build.ps1 -Version 1.1.0
+.\packaging\build.ps1 -Version 1.2.0
 ```
 
-O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.1.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.1.0.exe.sha256`.
+O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.2.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.2.0.exe.sha256`.
 
 Para montar apenas o executavel, sem exigir o Inno Setup:
 
@@ -164,8 +164,8 @@ Para montar apenas o executavel, sem exigir o Inno Setup:
 Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow na raiz do repositorio (`.github/workflows/release-windows.yml`) executa os testes e publica o instalador `SIPPER-Setup-<versao>.exe`, seu checksum `.exe.sha256` e o pacote portatil `.zip`.
 
 ```powershell
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 O acompanhamento fica na aba **Actions** do repositorio. Quando o workflow terminar, os arquivos estarao na aba **Releases**.

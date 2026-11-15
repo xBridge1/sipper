@@ -13,12 +13,12 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 ## Download
 
-Versao atual: **SIPPER 1.1.0**.
+Versao atual: **SIPPER 1.2.0**.
 
-- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe)
-- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-portable-1.1.0.zip)
-- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.1.0/SIPPER-Setup-1.1.0.exe.sha256)
-- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.1.0)
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-Setup-1.2.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-portable-1.2.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-Setup-1.2.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.2.0)
 
 ## Destaques
 

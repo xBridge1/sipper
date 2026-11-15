@@ -2,7 +2,7 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-15
 
 ### Added
 
