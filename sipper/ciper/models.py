@@ -46,17 +46,6 @@ class TCPFlow:
         return self.syn_ack_timestamp - self.syn_timestamp
 
 @dataclass
-class Finding:
-    type: str
-    severity: str
-    confidence: float
-    source_ip: str
-    destination_ip: str
-    description: str
-    evidence: list[str]
-    recommendation: str = ""
-
-@dataclass
 class UDPFlow:
     source_ip: str
     source_port: int

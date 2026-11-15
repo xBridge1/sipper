@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
 [![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-193%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen)
 
 ![SIPPER](logo/splash.png)
 
@@ -22,13 +22,16 @@ Versao atual: **SIPPER 1.1.0**.
 
 ## Destaques
 
-- Interface desktop moderna em PySide6 com temas claro e escuro.
+- Interface desktop moderna em PySide6 com temas claro e escuro (o tema escolhido e lembrado).
+- Arraste um `.pcap`/`.pcapng` para a janela ou abra um recente: a analise comeca sozinha, com barra de progresso real.
+- Leitor nativo de pcap/pcapng: analise cerca de 25x mais rapida e com 5x menos memoria que a versao 1.1.0.
+- Findings com nomes claros em portugues (ex.: "Jitter alto no RTP"), mantendo o codigo tecnico para busca.
 - Analise local e offline de arquivos PCAP, sem enviar capturas para a internet.
 - Painel de resumo com protocolos, severidade, chamadas, RTP e trafego ao longo do tempo.
 - Fluxo visual SIP com direcao das mensagens e estados da chamada.
 - Exportacao de resultados em JSON, CSV e PDF.
 - Configuracoes persistentes para limites de jitter, perda, tamanho de captura e perfil da plataforma VoIP.
-- Processamento em streaming para reduzir o uso de memoria em arquivos grandes.
+- Processamento em streaming: cada pacote e decodificado uma unica vez em um registro compacto.
 - Cancelamento seguro de analises em andamento e log rotativo local.
 
 ## Protocolos e diagnosticos
@@ -86,8 +89,10 @@ git clone https://github.com/xBridge1/sipper.git SIPPER-repo
 cd SIPPER-repo\sipper
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
+
+`requirements.txt` contem apenas as dependencias do aplicativo (PySide6 e packaging). `requirements-dev.txt` acrescenta pytest e scapy, usados somente pela suite de testes.
 
 ## Como usar
 
@@ -97,12 +102,23 @@ python -m pip install -r requirements.txt
 python -m ciper.gui_main
 ```
 
-Na aplicacao, selecione um arquivo `.pcap` ou `.pcapng`, clique em **Analisar** e navegue pelas visoes de Resumo, SIP, RTP, Rede, Findings e Estatisticas. Para verificacoes especificas, selecione **FreeSWITCH** e informe os IPs monitorados em **Configuracoes** antes da analise. Use **Exportar** para gerar o relatorio da analise atual.
+Arraste um arquivo `.pcap`, `.pcapng` ou `.cap` para a janela, clique em **Abrir PCAP** ou escolha um item em **Recentes**: a analise comeca automaticamente. Depois navegue pelas visoes de Resumo, Diagnostico, SIP, RTP, Rede, Findings e Estatisticas. Para verificacoes especificas, selecione **FreeSWITCH** e informe os IPs monitorados em **Configuracoes** antes da analise. Use **Exportar** para gerar o relatorio da analise atual.
+
+Tambem e possivel abrir uma captura direto pela linha de comando: `python -m ciper.gui_main captura.pcap` (ou `SIPPER.exe captura.pcap`).
+
+| Atalho | Acao |
+| --- | --- |
+| `Ctrl+O` | Abrir e analisar uma captura |
+| `F5` | Analisar novamente o arquivo atual |
+| `Esc` | Cancelar a analise em andamento |
+| `Ctrl+E` | Exportar relatorio |
+| `Ctrl+F` | Buscar na pagina atual |
+| `Ctrl+C` | Copiar as linhas selecionadas de uma tabela |
 
 ### Linha de comando
 
 ```powershell
-python -m ciper.main
+python -m ciper.main captura.pcap
 ```
 
 O modo de linha de comando permanece disponivel para uma consulta textual dos fluxos e findings. A interface grafica e a experiencia principal do produto.
@@ -115,7 +131,14 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-A versao 1.1.0 possui **193 testes automatizados**. Eles cobrem deteccoes TCP, UDP, ICMP, SIP, RTP, TLS, fragmentacao e FreeSWITCH, alem de correlacoes do engine, relatorios, configuracoes, atualizador, cancelamento e leitura de PCAP em streaming. O corpus sintetico reproduzivel esta em `tests/pcaps/`.
+A suite possui **221 testes automatizados**. Eles cobrem deteccoes TCP, UDP, ICMP, SIP, RTP, TLS, fragmentacao e FreeSWITCH, alem de correlacoes do engine, relatorios, configuracoes, atualizador, cancelamento, leitura de pcap/pcapng e o fluxo principal da interface. O corpus sintetico reproduzivel esta em `tests/pcaps/`.
+
+Para medir desempenho, gere uma captura sintetica grande e analise-a:
+
+```powershell
+python tests/pcaps/generate_benchmark_pcap.py bench.pcap --calls 100 --seconds 30
+python -m ciper.main bench.pcap
+```
 
 ## Instalador Windows
 
@@ -158,7 +181,10 @@ Ao iniciar, o SIPPER verifica em segundo plano a release mais recente publicada 
 ```text
 ciper/
   detectors/       Detectores por protocolo
-  gui/             Interface PySide6, temas e view models
+  gui/             Interface PySide6: app (janela), widgets, workers, styles, temas e view models
+  packets.py       Decodificacao rapida de pacotes (Ethernet, VLAN, SLL, IPv4/IPv6, TCP/UDP/ICMP)
+  pcap_reader.py   Leitor nativo de pcap e pcapng
+  labels.py        Nomes em portugues de findings, severidades e estados
   engine.py        Orquestracao, correlacao e sumarios de chamadas
   sip.py            Parser e fluxos SIP/SDP
   rtp.py            Parser e streams RTP
@@ -167,6 +193,7 @@ ciper/
 samples/           Capturas de exemplo
 tests/             Suite automatizada
 logo/              Identidade visual da aplicacao
+docs/              Mockup de referencia do painel
 packaging/          Scripts para EXE e instalador Windows
 ```
 

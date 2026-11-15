@@ -2,6 +2,36 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [Unreleased]
+
+### Added
+
+- Leitor nativo de pcap e pcapng (`ciper/pcap_reader.py`) e decodificador leve de pacotes (`ciper/packets.py`) com suporte a Ethernet, VLAN/QinQ, PPPoE, MPLS, Linux SLL/SLL2, loopback, IPv4/IPv6 com cabecalhos de extensao e fragmentos.
+- Barra de progresso real durante a analise, com etapa atual e percentual.
+- Arrastar e soltar capturas na janela, analise automatica ao abrir um arquivo, lista de arquivos recentes e abertura pela linha de comando.
+- Tela inicial com orientacao, atalhos de teclado (Ctrl+O, F5, Esc, Ctrl+E, Ctrl+F) e copia de linhas das tabelas (Ctrl+C).
+- Nomes em portugues para todos os findings, severidades e estados de chamada na interface e nos relatorios (CSV ganhou a coluna `title`).
+- Gerador de captura sintetica grande para benchmark (`tests/pcaps/generate_benchmark_pcap.py`).
+- Testes para o leitor/decodificador, rotulos, preferencias e fluxo principal da janela (221 testes).
+
+### Changed
+
+- Analise cerca de 25x mais rapida: 65 MB / 285 mil pacotes passaram de 64 s para 2,5 s; pico de memoria de 1,5 GB para 300 MB.
+- Cada pacote e decodificado uma unica vez; SIP, RTP e a classificacao de protocolo sao calculados uma vez e compartilhados entre o painel, o grafico e o engine.
+- A remontagem TCP e feita uma unica vez e compartilhada entre SIP sobre TCP e TLS.
+- scapy deixou de ser dependencia do aplicativo e passou para `requirements-dev.txt` (usado apenas nos testes), reduzindo o pacote instalado.
+- Limite padrao de tamanho de captura aumentado de 1 GB para 4 GB.
+- Interface dividida em modulos (`widgets`, `workers`, `styles`); o tema escolhido e lembrado entre sessoes.
+- Eventos normais de chamada (estabelecida/encerrada) aparecem como "Info" e nao sao mais listados como falhas de sinalizacao.
+- Horario de inicio das chamadas exibido como hora local (HH:MM:SS.mmm) em vez de timestamp Unix.
+
+### Fixed
+
+- Direcao de retransmissoes TCP em capturas Ethernet usava o endereco MAC em vez do IP.
+- Padding Ethernet era contado como payload TCP, podendo gerar falsas retransmissoes.
+- Leitura de records TLS e busca de SIP em fluxos TCP grandes tinham custo quadratico.
+- Grafico "RTP OK" das estatisticas sempre mostrava zero.
+
 ## [1.1.0] - 2026-10-25
 
 ### Added
