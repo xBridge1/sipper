@@ -1,7 +1,7 @@
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.inet6 import IPv6
 
-from ciper.gui.app import _build_traffic_counts
+from ciper.gui.workers import _build_traffic_counts
 from tests.test_rtp import make_rtp_packet
 
 

@@ -6,6 +6,8 @@ from pathlib import Path
 from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
 
+from ciper.labels import display_severity, finding_title, severity_label, state_label
+
 
 def build_report_payload(viewmodel, source_pcap, capture_duration):
     return {
@@ -31,6 +33,7 @@ def export_csv(payload, destination):
     fieldnames = [
         "record_type",
         "id",
+        "title",
         "severity",
         "source",
         "destination",
@@ -60,6 +63,7 @@ def export_csv(payload, destination):
                     "state": call["signaling_state"],
                     "media_state": call["media_state"],
                     "media_quality": call.get("media_quality", "unknown"),
+                    "title": finding_title(call["primary_issue"]) if call["primary_issue"] else "",
                     "description": call["primary_issue"] or "",
                     "recommendation": call["recommended_action"],
                     "packet_count": call["rtp_metrics"]["packet_count"],
@@ -74,6 +78,7 @@ def export_csv(payload, destination):
                 {
                     "record_type": "finding",
                     "id": finding["type"],
+                    "title": finding_title(finding["type"]),
                     "severity": finding["severity"],
                     "source": finding["source"],
                     "destination": finding["destination"],
@@ -110,8 +115,8 @@ def build_report_html(payload):
     overview = payload["overview"]
     finding_rows = "".join(
         "<tr>"
-        f"<td>{_escape(finding['severity'].upper())}</td>"
-        f"<td>{_escape(finding['type'])}</td>"
+        f"<td>{_escape(severity_label(display_severity(finding['type'], finding['severity'])))}</td>"
+        f"<td>{_escape(finding_title(finding['type']))}<br><small>{_escape(finding['type'])}</small></td>"
         f"<td>{_escape(finding['source'])}</td>"
         f"<td>{_escape(finding['destination'])}</td>"
         f"<td>{_escape(finding['description'])}</td>"
@@ -123,9 +128,9 @@ def build_report_html(payload):
         f"<td>{_escape(call['call_id'])}</td>"
         f"<td>{_escape(call['source_ip'])}</td>"
         f"<td>{_escape(call['destination_ip'])}</td>"
-        f"<td>{_escape(call['signaling_state'])}</td>"
-        f"<td>{_escape(call['media_state'])}</td>"
-        f"<td>{_escape(call.get('media_quality', 'unknown'))}</td>"
+        f"<td>{_escape(state_label(call['signaling_state']))}</td>"
+        f"<td>{_escape(state_label(call['media_state']))}</td>"
+        f"<td>{_escape(state_label(call.get('media_quality', 'unknown')))}</td>"
         f"<td>{call['rtp_metrics']['loss_percent']:.2f}%</td>"
         "</tr>"
         for call in payload["calls"]

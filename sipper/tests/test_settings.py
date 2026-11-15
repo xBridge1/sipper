@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ciper.settings import AnalysisSettings, load_settings, save_settings
+from ciper.settings import MAX_RECENT_FILES, AnalysisSettings, add_recent_file, load_settings, save_settings
 
 
 def test_settings_are_saved_and_loaded(tmp_path):
@@ -54,3 +54,43 @@ def test_settings_with_invalid_encoding_use_defaults(tmp_path):
     file_path.write_bytes(b"\xff\xfe\x00")
 
     assert load_settings(file_path) == AnalysisSettings()
+
+
+def test_theme_and_recent_files_round_trip(tmp_path):
+    file_path = tmp_path / "settings.json"
+    settings = AnalysisSettings(theme="light", recent_files=["C:/captures/a.pcap"])
+
+    save_settings(settings, file_path)
+
+    assert load_settings(file_path) == settings
+
+
+def test_invalid_theme_and_recent_files_are_sanitized(tmp_path):
+    file_path = tmp_path / "settings.json"
+    file_path.write_text(
+        json.dumps({"theme": "neon", "recent_files": ["ok.pcap", 3, "", None] + [f"{i}.pcap" for i in range(20)]}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(file_path)
+
+    assert settings.theme == "dark"
+    assert settings.recent_files[0] == "ok.pcap"
+    assert len(settings.recent_files) == MAX_RECENT_FILES
+    assert all(isinstance(item, str) and item for item in settings.recent_files)
+
+
+def test_add_recent_file_moves_existing_entry_to_top(tmp_path):
+    first = tmp_path / "a.pcap"
+    second = tmp_path / "b.pcap"
+    settings = AnalysisSettings(recent_files=[str(first), str(second)])
+
+    recent = add_recent_file(settings, second)
+
+    assert recent == [str(second), str(first)]
+
+
+def test_add_recent_file_stores_absolute_paths():
+    recent = add_recent_file(AnalysisSettings(), "relative/capture.pcap")
+
+    assert Path(recent[0]).is_absolute()

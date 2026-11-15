@@ -1,6 +1,7 @@
 from collections import Counter
 
 from ciper.findings import describe_responsibility
+from ciper.labels import display_severity, finding_title, severity_label, state_label
 
 
 def build_dashboard_viewmodel(packet_analysis, engine_result):
@@ -24,7 +25,10 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
             {
                 "key": f"{index}:{finding.type}:{finding.source_ip}:{finding.destination_ip}",
                 "type": finding.type,
+                "title": finding_title(finding.type),
                 "severity": finding.severity,
+                "display_severity": display_severity(finding.type, finding.severity),
+                "severity_label": severity_label(display_severity(finding.type, finding.severity)),
                 "source": finding.source_ip,
                 "destination": finding.destination_ip,
                 "description": finding.description,
@@ -58,6 +62,9 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "media_quality_metrics": summary.get("media_quality_metrics", {}),
                 "severity": summary["severity"],
                 "primary_issue": summary["primary_issue"],
+                "primary_issue_title": finding_title(summary["primary_issue"]),
+                "signaling_state_label": state_label(summary["signaling_state"]),
+                "media_state_label": state_label(summary["media_state"]),
                 "finding_types": list(summary.get("finding_types", [])),
                 "codec_guesses": summary["codec_guesses"],
                 "key_evidence": summary.get("key_evidence", []),

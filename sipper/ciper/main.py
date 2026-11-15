@@ -1,19 +1,30 @@
-from ciper.pcap_reader import read_pcap
-from ciper.analyzer import analyze_packets
-from ciper.engine import analyze_pcap
+import sys
+import time
+
+from ciper.analyzer import PacketAnalysisAccumulator
+from ciper.engine import analyze_pcap_file
+from ciper.labels import display_severity, finding_title, severity_label
+from ciper.pcap_reader import PcapInputError
 
 
-def main():
-    file_path = input("Caminho do PCAP: ")
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    file_path = argv[0] if argv else input("Caminho do PCAP: ").strip().strip('"')
 
-    result = read_pcap(file_path)
-
-    packet_analysis = analyze_packets(result["packets"])
-    engine_result = analyze_pcap(result["packets"])
+    accumulator = PacketAnalysisAccumulator()
+    started = time.perf_counter()
+    try:
+        engine_result = analyze_pcap_file(file_path, packet_observer=accumulator.add)
+    except PcapInputError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        return 1
+    elapsed = time.perf_counter() - started
+    packet_analysis = accumulator.result()
 
     print()
     print("=== SIPPER ===")
-    print(f"Pacotes encontrados: {result['packet_count']}")
+    print(f"Pacotes encontrados: {engine_result['analysis_stats']['packet_count']}")
+    print(f"Tempo de analise: {elapsed:.2f} s")
 
     print()
     print("=== Protocolos ===")
@@ -60,7 +71,8 @@ def main():
 
     for finding in engine_result["findings"]:
         print()
-        print(f"[{finding.severity.upper()}] {finding.type}")
+        severity = severity_label(display_severity(finding.type, finding.severity))
+        print(f"[{severity.upper()}] {finding_title(finding.type)} ({finding.type})")
         print(
             f"{finding.source_ip} -> "
             f"{finding.destination_ip}"
@@ -76,6 +88,8 @@ def main():
         print("Recommendation:")
         print(f"  {finding.recommendation}")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

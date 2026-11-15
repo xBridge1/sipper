@@ -1,9 +1,11 @@
 import sys
-from threading import Event
+import time
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QObject, QPointF, QRectF, QSize, QPropertyAnimation, QThread, QTimer, QUrl, Qt, Signal, Slot, QVariantAnimation
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QSize, QPropertyAnimation, QThread, QTimer, QUrl, Qt
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QPushButton,
     QProgressBar,
     QRadioButton,
@@ -36,650 +39,35 @@ from PySide6.QtWidgets import (
     QStyle,
 )
 
-from ciper.analyzer import PacketAnalysisAccumulator
-from ciper.analysis_control import AnalysisCancelled, raise_if_cancelled
-from ciper.engine import analyze_pcap_file
-from ciper.gui.theme import FONTS, THEMES
 from ciper.gui.evidence import build_finding_evidence_context
+from ciper.labels import SEVERITY_ORDER, finding_title, is_actionable, severity_label, state_label
+from ciper.gui.styles import build_stylesheet
+from ciper.gui.theme import THEMES
 from ciper.gui.viewmodels import build_dashboard_viewmodel
+from ciper.gui.widgets import (
+    BarChart,
+    CallFlowWidget,
+    DonutChart,
+    KPIStat,
+    PanelCard,
+    SIPLadderWidget,
+    TrafficChart,
+    _font,
+)
+from ciper.gui.workers import AnalysisWorker, UpdateCheckWorker
 from ciper.reporting import build_report_payload, export_csv, export_json, export_pdf
 from ciper.resources import resource_path
-from ciper.rtp import parse_rtp_packet
-from ciper.settings import AnalysisSettings, load_settings, save_settings
-from ciper.sip import parse_sip_message
+from ciper.settings import add_recent_file, load_settings, save_settings
 from ciper.voip_quality import jitter_observation, mos_observation, packet_loss_observation, quality_reference_note
-from ciper.logging_setup import configure_logging
-from ciper.network import get_network_layer
-from ciper.updater import CURRENT_VERSION, check_for_update
-from scapy.layers.inet import ICMP, IP, TCP, UDP
+from ciper.updater import CURRENT_VERSION
 
 
+CAPTURE_SUFFIXES = {".pcap", ".pcapng", ".cap"}
 LOGO_ICON_PATH = resource_path("logo", "e4d70232-e1e2-4761-bd1b-dc88ac325f6e.png")
 LOGO_PREVIEW_PATH = resource_path("logo", "9761bd23-eb2a-4777-8de4-2910814a3f4c.png")
 DARK_SPLASH_LOGO_PATH = resource_path("logo", "splash.png")
 LIGHT_SPLASH_LOGO_PATH = resource_path("logo", "splash_black.png")
 
-
-def _font(key):
-    family, size, *rest = FONTS[key]
-    font = QFont(family, size)
-    if rest and "Semibold" in family:
-        font.setWeight(QFont.DemiBold)
-    return font
-
-
-def _animate_chart(widget):
-    animation = getattr(widget, "chart_animation", None)
-    if animation is None:
-        animation = QVariantAnimation(widget)
-        animation.setDuration(520)
-        animation.setEasingCurve(QEasingCurve.OutCubic)
-        animation.valueChanged.connect(
-            lambda value, target=widget: _set_chart_progress(target, value)
-        )
-        widget.chart_animation = animation
-    animation.stop()
-    widget.chart_progress = 0.0
-    animation.setStartValue(0.0)
-    animation.setEndValue(1.0)
-    animation.start()
-
-
-def _set_chart_progress(widget, value):
-    widget.chart_progress = float(value)
-    widget.update()
-
-
-class AnalysisWorker(QObject):
-    progress_changed = Signal(str)
-    completed = Signal(object, object, object, object, float)
-    failed = Signal(str)
-
-    def __init__(self, file_path, settings):
-        super().__init__()
-        self.file_path = file_path
-        self.settings = settings
-        self.cancel_event = Event()
-        self.logger = configure_logging()
-
-    def cancel(self):
-        self.cancel_event.set()
-
-    @Slot()
-    def run(self):
-        try:
-            if not Path(self.file_path).is_file():
-                raise ValueError("Arquivo PCAP nao encontrado")
-            size_bytes = Path(self.file_path).stat().st_size
-            max_size_bytes = self.settings.max_pcap_size_mb * 1024 * 1024
-            if size_bytes > max_size_bytes:
-                raise ValueError(
-                    f"Arquivo PCAP excede o limite configurado de {self.settings.max_pcap_size_mb} MB"
-                )
-            self.progress_changed.emit("Lendo arquivo PCAP")
-            self.progress_changed.emit("Classificando protocolos")
-            packet_analysis = PacketAnalysisAccumulator(self.cancel_event)
-            traffic_analysis = TrafficAccumulator(self.settings.max_traffic_points)
-
-            def collect_packet_metrics(packet):
-                packet_analysis.add(packet)
-                traffic_analysis.add(packet)
-
-            self.progress_changed.emit("Correlacionando rede, SIP e RTP")
-            engine_result = analyze_pcap_file(
-                self.file_path,
-                self.settings,
-                self.cancel_event,
-                collect_packet_metrics,
-            )
-            self.progress_changed.emit("Preparando graficos")
-            traffic_counts, traffic_labels, capture_duration = traffic_analysis.result()
-            raise_if_cancelled(self.cancel_event)
-            self.completed.emit(
-                packet_analysis.result(),
-                engine_result,
-                traffic_counts,
-                traffic_labels,
-                capture_duration,
-            )
-        except AnalysisCancelled as error:
-            self.failed.emit(str(error))
-        except Exception as error:
-            self.logger.exception("Falha durante analise de PCAP: %s", self.file_path)
-            self.failed.emit(str(error))
-
-
-class UpdateCheckWorker(QObject):
-    completed = Signal(object)
-
-    @Slot()
-    def run(self):
-        self.completed.emit(check_for_update())
-
-
-def _iter_with_cancellation(packets, cancel_event):
-    for packet in packets:
-        raise_if_cancelled(cancel_event)
-        yield packet
-
-
-class TrafficAccumulator:
-    def __init__(self, max_bucket_count=720):
-        self.names = ["SIP", "RTP", "TCP", "UDP", "ICMP"]
-        self.max_bucket_count = max(1, max_bucket_count)
-        self.buckets = {name: {} for name in self.names}
-        self.first_time = None
-        self.last_time = None
-
-    def add(self, packet):
-        if not hasattr(packet, "time"):
-            return
-        timestamp = float(packet.time)
-        second = int(timestamp)
-        self.first_time = timestamp if self.first_time is None else min(self.first_time, timestamp)
-        self.last_time = timestamp if self.last_time is None else max(self.last_time, timestamp)
-        protocol = _classify_packet_for_traffic(packet)
-        if protocol in self.buckets:
-            self.buckets[protocol][second] = self.buckets[protocol].get(second, 0) + 1
-
-    def result(self):
-        if self.first_time is None or self.last_time is None:
-            return {}, [], 0.0
-
-        first_second = int(self.first_time)
-        last_second = int(self.last_time)
-        span_seconds = max(1, last_second - first_second + 1)
-        bucket_width = max(1, (span_seconds + self.max_bucket_count - 1) // self.max_bucket_count)
-        bucket_count = (span_seconds + bucket_width - 1) // bucket_width
-        counters = {name: [0] * bucket_count for name in self.names}
-
-        for name in self.names:
-            for second, count in self.buckets[name].items():
-                index = min((second - first_second) // bucket_width, bucket_count - 1)
-                counters[name][index] += count
-
-        labels = [_format_axis_time(index * bucket_width) for index in range(bucket_count)]
-        return counters, labels, self.last_time - self.first_time
-
-
-def _build_traffic_counts(packets, max_bucket_count=720):
-    accumulator = TrafficAccumulator(max_bucket_count)
-    for packet in packets:
-        accumulator.add(packet)
-    return accumulator.result()
-
-
-def _classify_packet_for_traffic(packet):
-    if parse_sip_message(packet) is not None:
-        return "SIP"
-    if parse_rtp_packet(packet) is not None:
-        return "RTP"
-    if get_network_layer(packet) is not None and TCP in packet:
-        return "TCP"
-    if get_network_layer(packet) is not None and UDP in packet:
-        return "UDP"
-    if IP in packet and ICMP in packet:
-        return "ICMP"
-    return None
-
-
-def _format_axis_time(seconds_offset):
-    minutes = int(seconds_offset) // 60
-    seconds = int(seconds_offset) % 60
-    return f"{minutes:02d}:{seconds:02d}"
-
-
-class PanelCard(QFrame):
-    def __init__(self, title):
-        super().__init__()
-        self.setObjectName("panelCard")
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("panelTitle")
-        self.title_label.setFont(_font("subtitle"))
-        self.body_layout = QVBoxLayout()
-        self.body_layout.setContentsMargins(18, 6, 18, 18)
-        self.body_layout.setSpacing(12)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(self.title_label)
-        layout.addLayout(self.body_layout)
-
-    def set_title(self, title):
-        self.title_label.setText(title)
-
-    def add_widget(self, widget, stretch=0):
-        self.body_layout.addWidget(widget, stretch)
-
-
-class KPIStat(QFrame):
-    def __init__(self, label):
-        super().__init__()
-        self.setObjectName("kpiStat")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(4)
-        self.value_label = QLabel("0")
-        self.value_label.setObjectName("kpiValue")
-        self.value_label.setFont(QFont("Segoe UI", 24, QFont.DemiBold))
-        self.label = QLabel(label)
-        self.label.setObjectName("kpiLabel")
-        self.label.setFont(_font("small"))
-        layout.addWidget(self.value_label)
-        layout.addWidget(self.label)
-
-    def set_value(self, value):
-        self.value_label.setText(str(value))
-
-
-class CallFlowWidget(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.call = None
-        self.setMinimumHeight(130)
-
-    def set_call(self, call):
-        self.call = call
-        self.update()
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.transparent)
-
-        if self.call is None:
-            painter.setPen(QColor("#777777"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sem fluxo selecionado")
-            return
-
-        stages = self._build_stages()
-        rect = self.rect().adjusted(18, 18, -18, -18)
-        count = max(len(stages), 1)
-        gap = rect.width() / count
-        y = rect.center().y() - 8
-
-        for index, stage in enumerate(stages):
-            x = rect.left() + (gap * index) + (gap / 2)
-            if index < len(stages) - 1:
-                next_x = rect.left() + (gap * (index + 1)) + (gap / 2)
-                painter.setPen(QPen(QColor(stage["line"]), 3, Qt.SolidLine, Qt.RoundCap))
-                painter.drawLine(QPointF(x + 14, y), QPointF(next_x - 14, y))
-
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(stage["fill"]))
-            painter.drawEllipse(QRectF(x - 12, y - 12, 24, 24))
-            painter.setPen(QColor(stage["text"]))
-            painter.setFont(_font("small"))
-            painter.drawText(QRectF(x - 54, y + 18, 108, 18), Qt.AlignCenter, stage["label"])
-
-    def _build_stages(self):
-        palette = THEMES["dark"]
-        if self.call is not None:
-            palette = THEMES["dark"] if self.palette().window().color().lightness() < 128 else THEMES["light"]
-
-        signaling = self.call["signaling_state"]
-        media = self.call["media_state"]
-        severity = self.call["severity"]
-
-        complete = palette["success"]
-        warning = palette["warning"]
-        accent = palette["accent"]
-        neutral = palette["muted"]
-        danger = palette["danger"]
-        text = palette["text"]
-
-        setup_fill = complete if signaling in {"established", "completed"} else warning if signaling != "unknown" else neutral
-        ack_fill = complete if signaling == "established" else warning if signaling in {"setup_incomplete", "ringing"} else neutral
-        media_fill = complete if media == "ok" else warning if media in {"degraded_media", "one_way_media"} else neutral
-        quality_fill = danger if severity == "high" else warning if severity == "medium" else accent
-
-        return [
-            {"label": "INVITE", "fill": setup_fill, "line": setup_fill, "text": text},
-            {"label": "200 OK", "fill": setup_fill, "line": ack_fill, "text": text},
-            {"label": "ACK", "fill": ack_fill, "line": media_fill, "text": text},
-            {"label": "RTP", "fill": media_fill, "line": quality_fill, "text": text},
-            {"label": "Qualidade", "fill": quality_fill, "line": quality_fill, "text": text},
-        ]
-
-
-class DonutChart(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.series = []
-        self.total_label = ""
-        self.subtitle = ""
-        self.chart_progress = 1.0
-        self.setMinimumHeight(180)
-
-    def set_series(self, series, total_label="", subtitle=""):
-        self.series = series
-        self.total_label = total_label
-        self.subtitle = subtitle
-        _animate_chart(self)
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.transparent)
-
-        if not self.series:
-            painter.setPen(QColor("#777777"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sem dados")
-            return
-
-        rect = self.rect().adjusted(12, 12, -12, -12)
-        has_legend = rect.width() >= 320
-        chart_size = min(rect.height() - 12, rect.width() * (0.42 if has_legend else 0.74), 172)
-        chart_size = max(chart_size, 88)
-        chart_rect = QRectF(rect.left(), rect.top(), chart_size, chart_size)
-        chart_rect.moveTop(rect.top() + (rect.height() - chart_rect.height()) / 2)
-        if has_legend:
-            chart_rect.moveLeft(rect.left() + 8)
-        else:
-            chart_rect.moveLeft(rect.left() + (rect.width() - chart_rect.width()) / 2)
-        total = sum(item["value"] for item in self.series)
-        angle = 90 * 16
-
-        for item in self.series:
-            span = 0 if total == 0 else int((item["value"] / total) * -360 * 16 * self.chart_progress)
-            painter.setBrush(QColor(item["color"]))
-            painter.setPen(QPen(QColor(item["border"]), 1))
-            painter.drawPie(chart_rect, angle, span)
-            angle += span
-
-        ring_width = max(20, min(34, chart_rect.width() * 0.22))
-        inner = chart_rect.adjusted(ring_width, ring_width, -ring_width, -ring_width)
-        painter.setBrush(QColor(self.palette().base().color()))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(inner)
-
-        center_x = inner.center().x()
-        center_y = inner.center().y()
-        value_font = QFont("Segoe UI", 15 if len(self.total_label) > 6 else 18, QFont.DemiBold)
-        painter.setPen(QColor(self.palette().text().color()))
-        painter.setFont(value_font)
-        painter.drawText(QRectF(center_x - 58, center_y - 24, 116, 24), Qt.AlignCenter, self.total_label)
-
-        if self.subtitle:
-            painter.setPen(QColor("#9A9A9A"))
-            painter.setFont(_font("small"))
-            painter.drawText(QRectF(center_x - 46, center_y + 2, 92, 18), Qt.AlignCenter, self.subtitle)
-
-        if has_legend:
-            legend_x = int(chart_rect.right()) + 22
-            legend_y = int(rect.top()) + 18
-            for index, item in enumerate(self.series[:5]):
-                y = legend_y + (index * 26)
-                painter.setBrush(QColor(item["color"]))
-                painter.setPen(Qt.NoPen)
-                painter.drawEllipse(QRectF(legend_x, y, 10, 10))
-                painter.setPen(QColor(self.palette().text().color()))
-                painter.setFont(_font("small"))
-                painter.drawText(QRectF(legend_x + 18, y - 2, rect.right() - legend_x - 20, 18), Qt.AlignLeft, item["label"])
-
-
-class BarChart(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.items = []
-        self.mode = "horizontal"
-        self.chart_progress = 1.0
-        self.setMinimumHeight(180)
-
-    def set_items(self, items, mode="horizontal"):
-        self.items = items
-        self.mode = mode
-        _animate_chart(self)
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.transparent)
-
-        if not self.items:
-            painter.setPen(QColor("#777777"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sem dados")
-            return
-
-        values = [item["value"] for item in self.items]
-        maximum = max(values) if values else 0
-        if maximum <= 0:
-            painter.setPen(QColor("#777777"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sem dados")
-            return
-
-        if self.mode == "vertical":
-            self._draw_vertical(painter, maximum)
-            return
-        self._draw_horizontal(painter, maximum)
-
-    def _draw_horizontal(self, painter, maximum):
-        rect = self.rect().adjusted(18, 18, -18, -18)
-        row_height = 32
-        bar_left = rect.left() + 70
-        bar_width = rect.width() - 90
-
-        for index, item in enumerate(self.items):
-            y = rect.top() + (index * row_height)
-            painter.setPen(QColor(self.palette().text().color()))
-            painter.setFont(_font("small"))
-            painter.drawText(rect.left(), y + 18, item["label"])
-            painter.setPen(QPen(QColor(item["track"]), 16, Qt.SolidLine, Qt.RoundCap))
-            painter.drawLine(QPointF(bar_left, y + 13), QPointF(bar_left + bar_width, y + 13))
-            fill_width = 0 if maximum == 0 else (item["value"] / maximum) * bar_width * self.chart_progress
-            painter.setPen(QPen(QColor(item["color"]), 16, Qt.SolidLine, Qt.RoundCap))
-            painter.drawLine(QPointF(bar_left, y + 13), QPointF(bar_left + fill_width, y + 13))
-            painter.setPen(QColor(self.palette().text().color()))
-            painter.drawText(rect.right() - 24, y + 18, str(item["value"]))
-
-    def _draw_vertical(self, painter, maximum):
-        rect = self.rect().adjusted(24, 18, -24, -28)
-        baseline = rect.bottom()
-        count = max(len(self.items), 1)
-        slot = rect.width() / count
-        width = min(40, slot * 0.56)
-
-        for index, item in enumerate(self.items):
-            center_x = rect.left() + (slot * index) + (slot / 2)
-            height = 0 if maximum == 0 else (item["value"] / maximum) * (rect.height() - 30) * self.chart_progress
-            bar = QRectF(center_x - (width / 2), baseline - height, width, height)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(item["color"]))
-            painter.drawRoundedRect(bar, 8, 8)
-            painter.setPen(QColor(self.palette().text().color()))
-            painter.setFont(_font("small"))
-            painter.drawText(QRectF(center_x - 32, baseline - height - 22, 64, 18), Qt.AlignCenter, str(item["value"]))
-            painter.drawText(QRectF(center_x - 40, baseline + 8, 80, 18), Qt.AlignCenter, item["label"])
-
-
-class TrafficChart(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.series = []
-        self.labels = []
-        self.chart_progress = 1.0
-        self.setMinimumHeight(175)
-
-    def set_data(self, series, labels):
-        self.series = series
-        self.labels = labels
-        _animate_chart(self)
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.transparent)
-
-        if not self.series or not any(item["values"] for item in self.series):
-            painter.setPen(QColor("#777777"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sem dados de trafego")
-            return
-
-        rect = self.rect().adjusted(44, 20, -18, -34)
-        max_value = max((max(item["values"]) if item["values"] else 0) for item in self.series)
-        max_value = max(max_value, 1)
-
-        painter.setPen(QPen(QColor(self.palette().mid().color()), 1))
-        for step in range(5):
-            y = rect.bottom() - (rect.height() * step / 4)
-            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
-            painter.setPen(QColor(self.palette().text().color()))
-            painter.setFont(_font("small"))
-            painter.drawText(QRectF(0, y - 10, rect.left() - 8, 20), Qt.AlignRight | Qt.AlignVCenter, str(int(max_value * step / 4)))
-            painter.setPen(QPen(QColor(self.palette().mid().color()), 1))
-
-        count = max((len(item["values"]) for item in self.series), default=0)
-        if count < 2:
-            return
-
-        for index, item in enumerate(self.series):
-            values = item["values"]
-            if len(values) < 2:
-                continue
-            painter.setPen(QPen(QColor(item["color"]), 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            points = []
-            for point_index, value in enumerate(values):
-                x = rect.left() + (rect.width() * point_index / (count - 1))
-                y = rect.bottom() - ((value / max_value) * rect.height() * self.chart_progress)
-                points.append(QPointF(x, y))
-            for point_index in range(len(points) - 1):
-                painter.drawLine(points[point_index], points[point_index + 1])
-
-        painter.setPen(QColor(self.palette().text().color()))
-        painter.setFont(_font("small"))
-        label_step = max(1, count // 6)
-        for index in range(0, count, label_step):
-            if index >= len(self.labels):
-                continue
-            x = rect.left() + (rect.width() * index / (count - 1))
-            painter.drawText(QRectF(x - 26, rect.bottom() + 8, 52, 18), Qt.AlignCenter, self.labels[index])
-
-        legend_x = rect.left()
-        legend_y = 0
-        for index, item in enumerate(self.series):
-            x = legend_x + (index * 108)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(item["color"]))
-            painter.drawEllipse(QRectF(x, legend_y, 10, 10))
-            painter.setPen(QColor(self.palette().text().color()))
-            painter.drawText(QRectF(x + 16, legend_y - 4, 84, 18), Qt.AlignLeft | Qt.AlignVCenter, item["label"])
-
-
-class SIPLadderWidget(QWidget):
-    message_selected = Signal(int)
-
-    def __init__(self):
-        super().__init__()
-        self.flow = None
-        self.arrow_phase = 0.0
-        self.arrow_animation = QVariantAnimation(self)
-        self.arrow_animation.setStartValue(0.0)
-        self.arrow_animation.setEndValue(1.0)
-        self.arrow_animation.setDuration(1800)
-        self.arrow_animation.setLoopCount(-1)
-        self.arrow_animation.setEasingCurve(QEasingCurve.Linear)
-        self.arrow_animation.valueChanged.connect(self._set_arrow_phase)
-        self.setMinimumHeight(320)
-
-    def set_flow(self, flow):
-        self.flow = flow
-        message_count = len(flow.messages) if flow is not None else 0
-        self.setMinimumHeight(max(320, 130 + (message_count * 44)))
-        if flow is None:
-            self.arrow_animation.stop()
-        elif self.arrow_animation.state() != QAbstractAnimation.Running:
-            self.arrow_animation.start()
-        self.update()
-
-    def _set_arrow_phase(self, value):
-        self.arrow_phase = float(value)
-        self.update()
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.transparent)
-
-        if self.flow is None:
-            painter.setPen(QColor("#777777"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sem mensagens SIP")
-            return
-
-        palette = THEMES["dark"] if self.palette().window().color().lightness() < 128 else THEMES["light"]
-        rect = self.rect().adjusted(24, 24, -24, -24)
-        left_x = rect.left() + 120
-        right_x = rect.right() - 120
-        top_y = rect.top() + 34
-        bottom_y = rect.bottom() - 10
-
-        painter.setPen(QColor(palette["text"]))
-        painter.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
-        painter.drawText(QRectF(left_x - 110, rect.top(), 220, 24), Qt.AlignCenter, f"{self.flow.source_ip}:{self.flow.messages[0].source_port if self.flow.messages else 0}")
-        painter.drawText(QRectF(right_x - 110, rect.top(), 220, 24), Qt.AlignCenter, f"{self.flow.destination_ip}:{self.flow.messages[0].destination_port if self.flow.messages else 0}")
-
-        painter.setPen(QPen(QColor(palette["border"]), 2, Qt.DashLine))
-        painter.drawLine(QPointF(left_x, top_y), QPointF(left_x, bottom_y))
-        painter.drawLine(QPointF(right_x, top_y), QPointF(right_x, bottom_y))
-
-        for index, message in enumerate(self.flow.messages):
-            y = top_y + 28 + (index * 44)
-            is_request = message.is_request
-            start_x = left_x if is_request else right_x
-            end_x = right_x if is_request else left_x
-            arrow_color = self._message_color(message)
-            label = message.method if is_request else f"{message.status_code} {message.reason_phrase or ''}".strip()
-            time_text = f"{message.packet_time:.3f}"
-
-            painter.setPen(QPen(QColor(arrow_color), 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            painter.drawLine(QPointF(start_x, y), QPointF(end_x, y))
-            if end_x > start_x:
-                painter.drawLine(QPointF(end_x - 10, y - 6), QPointF(end_x, y))
-                painter.drawLine(QPointF(end_x - 10, y + 6), QPointF(end_x, y))
-            else:
-                painter.drawLine(QPointF(end_x + 10, y - 6), QPointF(end_x, y))
-                painter.drawLine(QPointF(end_x + 10, y + 6), QPointF(end_x, y))
-
-            pulse_phase = (self.arrow_phase + (index * 0.16)) % 1.0
-            pulse_x = start_x + ((end_x - start_x) * pulse_phase)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(arrow_color).lighter(130))
-            painter.drawEllipse(QRectF(pulse_x - 4, y - 4, 8, 8))
-
-            mid_x = (start_x + end_x) / 2
-            label_rect = QRectF(mid_x - 110, y - 18, 220, 20)
-            time_rect = QRectF(mid_x - 70, y + 4, 140, 16)
-            painter.setPen(QColor(palette["text"]))
-            painter.setFont(_font("small"))
-            painter.drawText(label_rect, Qt.AlignCenter, label)
-            painter.setPen(QColor(palette["muted"]))
-            painter.drawText(time_rect, Qt.AlignCenter, time_text)
-
-    def _message_color(self, message):
-        if message.is_request:
-            return "#3B82F6"
-        if 100 <= message.status_code < 200:
-            return "#F5A524"
-        if 200 <= message.status_code < 300:
-            return "#22A06B"
-        return "#E5484D"
-
-    def mousePressEvent(self, event):
-        if self.flow is None:
-            return
-
-        rect = self.rect().adjusted(24, 24, -24, -24)
-        first_message_y = rect.top() + 62
-        index = round((event.position().y() - first_message_y) / 44)
-
-        if 0 <= index < len(self.flow.messages):
-            message_y = first_message_y + (index * 44)
-            if abs(event.position().y() - message_y) <= 18:
-                self.message_selected.emit(index)
-                event.accept()
-                return
-
-        super().mousePressEvent(event)
 
 
 class SipperWindow(QMainWindow):
@@ -689,8 +77,10 @@ class SipperWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(LOGO_ICON_PATH)))
         self.resize(1600, 1000)
         self.setMinimumSize(1180, 720)
-        self.current_theme = "dark"
         self.analysis_settings = load_settings()
+        self.current_theme = self.analysis_settings.theme
+        self.analysis_started_at = None
+        self.analyzed_file = None
         self.last_viewmodel = None
         self.last_engine_result = None
         self.last_packets = []
@@ -715,7 +105,9 @@ class SipperWindow(QMainWindow):
         self.page_widgets = {}
         self.page_cards = {}
         self.active_animations = []
+        self.setAcceptDrops(True)
         self._build_ui()
+        self._install_shortcuts()
         self._apply_theme()
         self._render_all()
         QTimer.singleShot(1500, self._check_for_update)
@@ -869,35 +261,48 @@ class SipperWindow(QMainWindow):
         toolbar_layout.setSpacing(12)
         toolbar_layout.addWidget(QLabel("Arquivo PCAP:"))
         self.file_input = QLineEdit()
-        self.file_input.setPlaceholderText("Selecione um arquivo .pcap ou .pcapng")
+        self.file_input.setPlaceholderText("Arraste um .pcap/.pcapng para a janela ou clique em Abrir PCAP")
+        self.file_input.returnPressed.connect(self._analyze_file)
         self.file_input.setMinimumWidth(220)
         toolbar_layout.addWidget(self.file_input, 1)
         self.open_button = QPushButton("Abrir PCAP")
         self.open_button.setObjectName("secondaryButton")
         self.open_button.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
         self.open_button.clicked.connect(self._choose_file)
+        self.open_button.setToolTip("Abrir e analisar uma captura (Ctrl+O)")
+        self.recent_button = QPushButton("Recentes")
+        self.recent_button.setObjectName("secondaryButton")
+        self.recent_menu = QMenu(self.recent_button)
+        self.recent_button.setMenu(self.recent_menu)
+        self.recent_button.setToolTip("Capturas analisadas recentemente")
         self.analyze_button = QPushButton("Analisar")
         self.analyze_button.setObjectName("primaryButton")
         self.analyze_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.analyze_button.clicked.connect(self._analyze_file)
+        self.analyze_button.setToolTip("Analisar novamente o arquivo atual (F5)")
         self.export_button = QPushButton("Exportar")
         self.export_button.setObjectName("secondaryButton")
         self.export_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self._export_report)
+        self.export_button.setToolTip("Exportar relatorio JSON, CSV ou PDF (Ctrl+E)")
         self.cancel_button = QPushButton("Cancelar")
         self.cancel_button.setObjectName("secondaryButton")
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self._cancel_analysis)
+        self.cancel_button.setToolTip("Cancelar a analise em andamento (Esc)")
+        self.cancel_button.setVisible(False)
         self.analysis_progress = QProgressBar()
-        self.analysis_progress.setRange(0, 1)
+        self.analysis_progress.setRange(0, 100)
         self.analysis_progress.setValue(0)
-        self.analysis_progress.setTextVisible(False)
-        self.analysis_progress.setFixedWidth(100)
+        self.analysis_progress.setTextVisible(True)
+        self.analysis_progress.setFormat("%p%")
+        self.analysis_progress.setFixedWidth(160)
         self.analysis_progress.setVisible(False)
         self.page_badge = QLabel("Resumo")
         self.page_badge.setObjectName("pageBadge")
         toolbar_layout.addWidget(self.open_button)
+        toolbar_layout.addWidget(self.recent_button)
         toolbar_layout.addWidget(self.analyze_button)
         toolbar_layout.addWidget(self.cancel_button)
         toolbar_layout.addWidget(self.export_button)
@@ -907,6 +312,7 @@ class SipperWindow(QMainWindow):
 
         self.pages = QStackedWidget()
         self._build_pages()
+        self._rebuild_recent_menu()
 
         self.status_bar_label = QLabel("Pronto")
         self.status_bar_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -992,6 +398,8 @@ class SipperWindow(QMainWindow):
         self.summary_sip_flow_button.clicked.connect(self._open_sip_flow_dialog)
         self.summary_detail_text = self._make_text()
         self.summary_findings_table = self._make_incident_table()
+        self.summary_findings_table.doubleClicked.connect(lambda _index: self._set_page("Diagnostico"))
+        self.summary_findings_table.setToolTip("Clique duplo para abrir o diagnostico completo")
         self.summary_traffic_chart = TrafficChart()
 
         self.summary_metrics.add_widget(self.summary_kpi_row)
@@ -1010,6 +418,8 @@ class SipperWindow(QMainWindow):
         layout.addWidget(self.summary_findings, 0, 2)
         layout.addWidget(self.summary_recent_findings, 1, 0, 1, 3)
         layout.addWidget(self.summary_traffic, 2, 0, 1, 3)
+        self.welcome_card = self._build_welcome_card()
+        layout.addWidget(self.welcome_card, 0, 0, 3, 3)
         self._register_page_cards(
             "Resumo",
             self.summary_metrics,
@@ -1197,9 +607,10 @@ class SipperWindow(QMainWindow):
         self.findings_table = self._make_findings_table()
         self.findings_filter = QComboBox()
         self.findings_filter.addItem("Todas as severidades", "all")
-        self.findings_filter.addItem("High", "high")
-        self.findings_filter.addItem("Medium", "medium")
-        self.findings_filter.addItem("Low", "low")
+        self.findings_filter.addItem("Alta", "high")
+        self.findings_filter.addItem("Media", "medium")
+        self.findings_filter.addItem("Baixa", "low")
+        self.findings_filter.addItem("Informativos", "info")
         self.findings_filter.currentIndexChanged.connect(self._render_findings_page)
         self.findings_search = QLineEdit()
         self.findings_search.setPlaceholderText("Buscar IP ou tipo de finding")
@@ -1358,7 +769,7 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 72)
+        self._configure_responsive_table(table, 72, stretch_columns=(0,))
         table.verticalHeader().setDefaultSectionSize(28)
         table.itemSelectionChanged.connect(self._on_call_selected)
         return table
@@ -1374,7 +785,7 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 90)
+        self._configure_responsive_table(table, 90, stretch_columns=(2,))
         table.verticalHeader().setDefaultSectionSize(28)
         table.itemSelectionChanged.connect(self._on_finding_selected)
         return table
@@ -1390,7 +801,7 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 100)
+        self._configure_responsive_table(table, 100, stretch_columns=(1, 3))
         table.verticalHeader().setDefaultSectionSize(32)
         table.itemSelectionChanged.connect(self._on_finding_selected)
         return table
@@ -1408,28 +819,222 @@ class SipperWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 76)
+        self._configure_responsive_table(table, 76, stretch_columns=(0, 1))
         table.verticalHeader().setDefaultSectionSize(28)
         return table
 
-    def _configure_responsive_table(self, table, minimum_section_width):
+    def _configure_responsive_table(self, table, minimum_section_width, stretch_columns=None):
         header = table.horizontalHeader()
         header.setMinimumSectionSize(minimum_section_width)
         header.setDefaultSectionSize(minimum_section_width)
-        header.setSectionResizeMode(QHeaderView.Stretch)
+        if stretch_columns:
+            # Short columns (severity, ports, counters) fit their content and the
+            # descriptive columns share the remaining width, so titles are not cut.
+            header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            for column in stretch_columns:
+                header.setSectionResizeMode(column, QHeaderView.Stretch)
+        else:
+            header.setSectionResizeMode(QHeaderView.Stretch)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        table.setTextElideMode(Qt.ElideMiddle)
+        table.setTextElideMode(Qt.ElideRight)
+        table.setContextMenuPolicy(Qt.ActionsContextMenu)
+        copy_action = QAction("Copiar linha", table)
+        copy_action.setShortcut(QKeySequence.Copy)
+        copy_action.setShortcutContext(Qt.WidgetShortcut)
+        copy_action.triggered.connect(lambda _checked=False, source=table: self._copy_table_selection(source))
+        table.addAction(copy_action)
+
+    def _copy_table_selection(self, table):
+        rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
+        if not rows:
+            return
+        headers = [
+            table.horizontalHeaderItem(column).text() if table.horizontalHeaderItem(column) else ""
+            for column in range(table.columnCount())
+        ]
+        lines = ["\t".join(headers)]
+        for row in rows:
+            lines.append(
+                "\t".join(
+                    table.item(row, column).text() if table.item(row, column) else ""
+                    for column in range(table.columnCount())
+                )
+            )
+        QApplication.clipboard().setText("\n".join(lines))
+        self._set_status(f"{len(rows)} linha(s) copiada(s)")
 
     def _choose_file(self):
+        if self.analysis_thread is not None:
+            return
+        recent = self.analysis_settings.recent_files
+        start_directory = str(Path(recent[0]).parent) if recent else ""
         file_path, _selected = QFileDialog.getOpenFileName(
             self,
-            "Selecione um arquivo PCAP",
-            "",
-            "PCAP Files (*.pcap *.pcapng);;Todos os arquivos (*)",
+            "Selecione uma captura",
+            start_directory,
+            "Capturas (*.pcap *.pcapng *.cap);;Todos os arquivos (*)",
         )
         if file_path:
-            self.file_input.setText(file_path)
-            self._set_status("Arquivo carregado")
+            self.open_capture(file_path)
+
+    def open_capture(self, file_path):
+        """Load a capture and start analysing it right away."""
+        if self.analysis_thread is not None:
+            self._set_status("Aguarde a analise atual terminar ou cancele com Esc")
+            return
+        self.file_input.setText(str(file_path))
+        self._analyze_file()
+
+    def dragEnterEvent(self, event):
+        if self._dropped_capture(event.mimeData()) is not None and self.analysis_thread is None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):
+        file_path = self._dropped_capture(event.mimeData())
+        if file_path is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.open_capture(file_path)
+
+    def _dropped_capture(self, mime_data):
+        if not mime_data.hasUrls():
+            return None
+        for url in mime_data.urls():
+            if url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() in CAPTURE_SUFFIXES:
+                return url.toLocalFile()
+        return None
+
+    def _install_shortcuts(self):
+        bindings = (
+            (QKeySequence.Open, self._choose_file),
+            (QKeySequence("F5"), self._analyze_file),
+            (QKeySequence("Ctrl+E"), self._export_report),
+            (QKeySequence("Esc"), self._cancel_analysis),
+            (QKeySequence.Find, self._focus_search),
+        )
+        self.shortcuts = []
+        for sequence, handler in bindings:
+            shortcut = QShortcut(sequence, self)
+            shortcut.activated.connect(handler)
+            self.shortcuts.append(shortcut)
+
+    def _focus_search(self):
+        searches = {
+            "SIP": self.sip_search,
+            "RTP": self.rtp_search,
+            "Rede": self.network_search,
+            "Seguranca": self.security_search,
+            "Findings": self.findings_search,
+        }
+        current = self.page_badge.text()
+        if current not in searches:
+            self._set_page("Findings")
+            current = "Findings"
+        searches[current].setFocus()
+        searches[current].selectAll()
+
+    def _build_welcome_card(self):
+        card = QFrame()
+        card.setObjectName("dropZone")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(40, 48, 40, 40)
+        layout.setSpacing(14)
+        layout.addStretch(1)
+        title = QLabel("Arraste uma captura para ca")
+        title.setObjectName("welcomeTitle")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(_font("title"))
+        subtitle = QLabel(
+            "Solte um arquivo .pcap ou .pcapng em qualquer lugar da janela "
+            "e a analise comeca automaticamente."
+        )
+        subtitle.setObjectName("mutedLabel")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setWordWrap(True)
+        open_button = QPushButton("Abrir captura  (Ctrl+O)")
+        open_button.setObjectName("primaryButton")
+        open_button.setMinimumHeight(44)
+        open_button.setCursor(Qt.PointingHandCursor)
+        open_button.clicked.connect(self._choose_file)
+        open_row = QHBoxLayout()
+        open_row.addStretch(1)
+        open_row.addWidget(open_button)
+        open_row.addStretch(1)
+        self.welcome_recent_title = QLabel("Abertos recentemente")
+        self.welcome_recent_title.setAlignment(Qt.AlignCenter)
+        self.welcome_recent_title.setFont(_font("subtitle"))
+        self.welcome_recent_container = QWidget()
+        self.welcome_recent_layout = QVBoxLayout(self.welcome_recent_container)
+        self.welcome_recent_layout.setContentsMargins(0, 0, 0, 0)
+        self.welcome_recent_layout.setSpacing(6)
+        privacy = QLabel(
+            "A analise e feita localmente neste computador; nenhuma captura e enviada para a internet."
+        )
+        privacy.setObjectName("mutedLabel")
+        privacy.setAlignment(Qt.AlignCenter)
+        privacy.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addSpacing(8)
+        layout.addLayout(open_row)
+        layout.addSpacing(18)
+        layout.addWidget(self.welcome_recent_title)
+        layout.addWidget(self.welcome_recent_container, 0, Qt.AlignHCenter)
+        layout.addStretch(1)
+        layout.addWidget(privacy)
+        return card
+
+    def _rebuild_welcome_recent_list(self):
+        while self.welcome_recent_layout.count():
+            item = self.welcome_recent_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        recent = [path for path in self.analysis_settings.recent_files if Path(path).is_file()][:5]
+        self.welcome_recent_title.setVisible(bool(recent))
+        for path in recent:
+            button = QPushButton(f"{Path(path).name}    {Path(path).parent}")
+            button.setObjectName("recentFileButton")
+            button.setToolTip(path)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumWidth(520)
+            button.clicked.connect(lambda _checked=False, item=path: self.open_capture(item))
+            self.welcome_recent_layout.addWidget(button)
+
+    def _rebuild_recent_menu(self):
+        self.recent_menu.clear()
+        recent = self.analysis_settings.recent_files
+        for path in recent:
+            action = self.recent_menu.addAction(Path(path).name)
+            action.setToolTip(path)
+            action.setEnabled(Path(path).is_file())
+            action.triggered.connect(lambda _checked=False, item=path: self.open_capture(item))
+        if recent:
+            self.recent_menu.addSeparator()
+            self.recent_menu.addAction("Limpar lista").triggered.connect(self._clear_recent_files)
+        self.recent_button.setEnabled(bool(recent))
+
+    def _clear_recent_files(self):
+        self.analysis_settings = replace(self.analysis_settings, recent_files=[])
+        self._save_preferences()
+        self._rebuild_recent_menu()
+        self._rebuild_welcome_recent_list()
+
+    def _remember_recent_file(self, file_path):
+        self.analysis_settings = replace(
+            self.analysis_settings,
+            recent_files=add_recent_file(self.analysis_settings, file_path),
+        )
+        self._save_preferences()
+        self._rebuild_recent_menu()
+
+    def _save_preferences(self):
+        try:
+            save_settings(self.analysis_settings)
+        except OSError:
+            pass
 
     def _analyze_file(self):
         file_path = self.file_input.text().strip()
@@ -1440,13 +1045,19 @@ class SipperWindow(QMainWindow):
         if self.analysis_thread is not None:
             return
 
+        if not Path(file_path).is_file():
+            self._set_status(f"Arquivo nao encontrado: {file_path}")
+            return
+
+        self.analysis_started_at = time.perf_counter()
         self._set_analysis_running(True)
-        self._set_status("Iniciando analise")
+        self._set_status(f"Analisando {Path(file_path).name}")
         self.analysis_thread = QThread(self)
         self.analysis_worker = AnalysisWorker(file_path, self.analysis_settings)
         self.analysis_worker.moveToThread(self.analysis_thread)
         self.analysis_thread.started.connect(self.analysis_worker.run)
         self.analysis_worker.progress_changed.connect(self._set_status)
+        self.analysis_worker.progress_value.connect(self._on_analysis_progress)
         self.analysis_worker.completed.connect(self._on_analysis_completed)
         self.analysis_worker.failed.connect(self._on_analysis_failed)
         self.analysis_worker.completed.connect(self.analysis_thread.quit)
@@ -1454,6 +1065,11 @@ class SipperWindow(QMainWindow):
         self.analysis_thread.finished.connect(self.analysis_worker.deleteLater)
         self.analysis_thread.finished.connect(self._cleanup_analysis_worker)
         self.analysis_thread.start()
+
+    def _on_analysis_progress(self, stage, fraction):
+        percent = max(0, min(100, int(fraction * 100)))
+        self.analysis_progress.setValue(percent)
+        self._set_status(f"{stage}... {percent}%")
 
     def _on_analysis_completed(
         self,
@@ -1489,14 +1105,26 @@ class SipperWindow(QMainWindow):
             self._set_page("Resumo")
         self.export_button.setEnabled(True)
         self._set_analysis_running(False)
-        self._set_status("Analise concluida com sucesso")
+        file_path = self.file_input.text().strip()
+        self.analyzed_file = file_path
+        self.setWindowTitle(f"SIPPER - {Path(file_path).name}")
+        self._remember_recent_file(file_path)
+        elapsed = time.perf_counter() - (self.analysis_started_at or time.perf_counter())
+        overview = self.last_viewmodel["overview"]
+        actionable = sum(1 for finding in self.last_viewmodel["findings"] if is_actionable(finding) and finding["severity"] in {"high", "medium"})
+        self._set_status(
+            f"Analise concluida em {elapsed:.1f} s  |  "
+            f"{overview['packet_count']:,} pacotes  |  "
+            f"{overview['call_count']} chamadas  |  "
+            f"{actionable} problemas prioritarios".replace(",", ".")
+        )
 
     def _on_analysis_failed(self, error):
         self._set_analysis_running(False)
         if error == "Analise cancelada pelo usuario":
             self._set_status(error)
             return
-        self._set_status(f"Falha na analise: {error}")
+        self._set_status(f"Nao foi possivel analisar o arquivo: {error}")
 
     def _cancel_analysis(self):
         if self.analysis_worker is None:
@@ -1515,14 +1143,12 @@ class SipperWindow(QMainWindow):
         self.open_button.setEnabled(not is_running)
         self.analyze_button.setEnabled(not is_running)
         self.cancel_button.setEnabled(is_running)
+        self.cancel_button.setVisible(is_running)
+        self.recent_button.setEnabled(not is_running and bool(self.analysis_settings.recent_files))
         self.export_button.setEnabled(not is_running and self.last_viewmodel is not None)
         self.file_input.setReadOnly(is_running)
         self.analysis_progress.setVisible(is_running)
-        if is_running:
-            self.analysis_progress.setRange(0, 0)
-        else:
-            self.analysis_progress.setRange(0, 1)
-            self.analysis_progress.setValue(0)
+        self.analysis_progress.setValue(0)
 
     def _export_report(self):
         if self.last_viewmodel is None:
@@ -1638,6 +1264,8 @@ class SipperWindow(QMainWindow):
 
     def _on_theme_radio_changed(self):
         self.current_theme = "dark" if self.dark_radio.isChecked() else "light"
+        self.analysis_settings = replace(self.analysis_settings, theme=self.current_theme)
+        self._save_preferences()
         self._apply_theme()
         self._render_all()
 
@@ -1649,192 +1277,7 @@ class SipperWindow(QMainWindow):
         self.light_radio.setChecked(self.current_theme == "light")
         self.dark_radio.blockSignals(False)
         self.light_radio.blockSignals(False)
-        stylesheet = f"""
-            QWidget {{
-                background: {palette["bg"]};
-                color: {palette["text"]};
-                font-family: 'Segoe UI';
-                font-size: 10pt;
-            }}
-            QFrame#sidebar {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {palette["panel_alt"]}, stop:1 {palette["panel"]});
-                border: 1px solid {palette["border"]};
-                border-radius: 22px;
-            }}
-            QScrollArea {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollArea > QWidget > QWidget {{
-                background: transparent;
-            }}
-            QFrame#kpiStat {{
-                background: {palette["surface"]};
-                border: 1px solid {palette["border"]};
-                border-radius: 16px;
-            }}
-            QFrame {{
-                border: none;
-            }}
-            QFrame#panelCard {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {palette["panel"]}, stop:0.65 {palette["surface"]}, stop:1 {palette["panel"]});
-                border: 1px solid {palette["border"]};
-                border-radius: 20px;
-            }}
-            QLabel#panelTitle {{
-                color: {palette["text"]};
-                padding: 16px 18px 4px 18px;
-                font-size: 11pt;
-            }}
-            QLabel#kpiValue {{
-                color: {palette["text"]};
-            }}
-            QLabel#kpiLabel {{
-                color: {palette["muted"]};
-                letter-spacing: 0.5px;
-            }}
-            QPushButton {{
-                background: {palette["panel_alt"]};
-                color: {palette["text"]};
-                border: 1px solid transparent;
-                border-radius: 14px;
-                padding: 12px 14px;
-                text-align: left;
-            }}
-            QPushButton:hover {{
-                border: 1px solid {palette["accent"]};
-                background: {palette["selection"]};
-            }}
-            QPushButton[active="true"] {{
-                background: {palette["selection"]};
-                border: 1px solid {palette["accent"]};
-            }}
-            QPushButton#primaryButton {{
-                background: {palette["accent"]};
-                border: 1px solid {palette["accent"]};
-                padding: 12px 18px;
-            }}
-            QPushButton#primaryButton:hover {{
-                background: {palette["accent_alt"]};
-                border: 1px solid {palette["accent_alt"]};
-            }}
-            QPushButton#secondaryButton {{
-                background: {palette["panel_alt"]};
-                border: 1px solid {palette["border"]};
-                padding: 12px 18px;
-            }}
-            QFrame#themeToggle {{
-                background: {palette["surface"]};
-                border: 1px solid {palette["border"]};
-                border-radius: 14px;
-            }}
-            QRadioButton {{
-                background: transparent;
-                border: none;
-                spacing: 6px;
-                padding: 6px 8px;
-            }}
-            QRadioButton::indicator {{
-                width: 14px;
-                height: 14px;
-                border-radius: 7px;
-                border: 1px solid {palette["border"]};
-                background: {palette["panel_alt"]};
-            }}
-            QRadioButton::indicator:checked {{
-                background: {palette["accent"]};
-                border: 1px solid {palette["accent"]};
-            }}
-            QLineEdit, QTextEdit, QTableWidget, QComboBox, QSpinBox, QDoubleSpinBox {{
-                background: {palette["surface"]};
-                border: 1px solid {palette["border"]};
-                border-radius: 12px;
-                padding: 8px;
-            }}
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-                padding: 12px 14px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 28px;
-            }}
-            QComboBox QAbstractItemView {{
-                background: {palette["panel_alt"]};
-                border: 1px solid {palette["border"]};
-                selection-background-color: {palette["selection"]};
-            }}
-            QTextEdit {{
-                padding: 10px 12px;
-            }}
-            QHeaderView::section {{
-                background: {palette["panel_alt"]};
-                color: {palette["text"]};
-                border: none;
-                padding: 10px 8px;
-            }}
-            QTableWidget {{
-                gridline-color: transparent;
-                alternate-background-color: {palette["panel"]};
-                selection-background-color: {palette["selection"]};
-            }}
-            QTableWidget::item:selected {{
-                background: {palette["selection"]};
-            }}
-            QScrollBar:vertical {{
-                background: {palette["surface"]};
-                width: 10px;
-                margin: 4px 2px 4px 0;
-                border-radius: 5px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {palette["muted"]};
-                min-height: 36px;
-                border-radius: 5px;
-                margin: 1px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {palette["accent"]};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0;
-            }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: transparent;
-            }}
-            QScrollBar:horizontal {{
-                background: {palette["surface"]};
-                height: 10px;
-                margin: 0 4px 2px 4px;
-                border-radius: 5px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background: {palette["muted"]};
-                min-width: 36px;
-                border-radius: 5px;
-                margin: 1px;
-            }}
-            QScrollBar::handle:horizontal:hover {{
-                background: {palette["accent"]};
-            }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-                width: 0;
-            }}
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
-                background: transparent;
-            }}
-            QProgressBar {{
-                background: {palette["surface"]};
-                border: 1px solid {palette["border"]};
-                border-radius: 5px;
-            }}
-            QProgressBar::chunk {{
-                background: {palette["accent"]};
-                border-radius: 4px;
-            }}
-            QLabel {{
-                background: transparent;
-            }}
-        """
+        stylesheet = build_stylesheet(palette)
         self.setStyleSheet(stylesheet)
         self._update_brand_splash()
         self.page_badge.setStyleSheet(
@@ -1873,12 +1316,15 @@ class SipperWindow(QMainWindow):
             self._fill_incident_table(self.diagnostic_incidents_table, [])
             return
 
-        severity_rank = {"high": 0, "medium": 1, "low": 2}
         incidents = sorted(
             self.last_viewmodel["findings"],
-            key=lambda finding: (severity_rank.get(finding["severity"], 3), finding["type"]),
+            key=lambda finding: (SEVERITY_ORDER.get(self._display_severity(finding), 9), finding["type"]),
         )
-        actionable = [finding for finding in incidents if finding["severity"] in {"high", "medium"}]
+        actionable = [
+            finding
+            for finding in incidents
+            if finding["severity"] in {"high", "medium"} and is_actionable(finding)
+        ]
         top = actionable[0] if actionable else (incidents[0] if incidents else None)
         if top is None:
             self.diagnostic_priority_text.setPlainText("Nenhum problema detectado na captura.")
@@ -1886,8 +1332,8 @@ class SipperWindow(QMainWindow):
             self.diagnostic_priority_text.setPlainText(
                 "\n".join(
                     [
-                        f"Incidente: {top['type']}",
-                        f"Prioridade: {top['severity'].upper()}",
+                        f"Incidente: {self._finding_title(top)}",
+                        f"Prioridade: {severity_label(self._display_severity(top))}",
                         f"De: {top['source']}",
                         f"Para: {top['destination']}",
                         f"Possivel responsavel: {top['responsibility']}",
@@ -1908,6 +1354,11 @@ class SipperWindow(QMainWindow):
         self._render_diagnostic_detail(self._selected_finding(actionable or incidents))
 
     def _render_summary_page(self):
+        has_data = self.last_viewmodel is not None
+        self.welcome_card.setVisible(not has_data)
+        for card in self.page_cards["Resumo"]:
+            card.setVisible(has_data)
+        self._rebuild_welcome_recent_list()
         if self.last_viewmodel is None:
             self.summary_detail_text.setPlainText("Selecione ou carregue uma chamada para ver detalhes.")
             for widget in (self.kpi_packets, self.kpi_protocols, self.kpi_calls, self.kpi_findings):
@@ -1964,23 +1415,12 @@ class SipperWindow(QMainWindow):
         self.summary_findings_chart.set_items(
             [
                 {
-                    "label": "High",
-                    "value": viewmodel["severity_counts"]["high"],
-                    "color": palette["danger"],
+                    "label": severity_label(severity),
+                    "value": self._count_display_severity(severity),
+                    "color": self._severity_color(severity, palette),
                     "track": palette["surface"],
-                },
-                {
-                    "label": "Medium",
-                    "value": viewmodel["severity_counts"]["medium"],
-                    "color": palette["warning"],
-                    "track": palette["surface"],
-                },
-                {
-                    "label": "Low",
-                    "value": viewmodel["severity_counts"]["low"],
-                    "color": palette["info"],
-                    "track": palette["surface"],
-                },
+                }
+                for severity in ("high", "medium", "low", "info")
             ]
         )
 
@@ -2006,7 +1446,7 @@ class SipperWindow(QMainWindow):
             ],
             filter_name,
         )
-        established = sum(1 for call in calls if call["signaling_state"] == "established")
+        established = sum(1 for call in calls if call["signaling_state"] in {"established", "terminated"})
         degraded = sum(1 for call in calls if call["severity"] in {"high", "medium"})
         analysis_profile = self.last_viewmodel.get("analysis_profile", {})
         platform = analysis_profile.get("target_platform", "generic")
@@ -2024,12 +1464,15 @@ class SipperWindow(QMainWindow):
                     f"Perfil de compatibilidade: {profile_name}",
                     f"IPs monitorados: {profile_scope}",
                     f"Fluxos SIP correlacionados: {len(calls)}",
-                    f"Chamadas estabelecidas: {established}",
+                    f"Chamadas completadas: {established}",
                     f"Chamadas com risco: {degraded}",
                 ]
             )
         )
-        self.sip_findings_text.setPlainText("\n".join(self._finding_lines(sip_findings, 12)) or "Nenhum finding SIP detectado.")
+        sip_problems = [finding for finding in sip_findings if is_actionable(finding)]
+        self.sip_findings_text.setPlainText(
+            "\n".join(self._finding_lines(sip_problems, 12)) or "Nenhuma falha de sinalizacao detectada."
+        )
         self._fill_calls_table(self.sip_calls_table, calls)
         call = self._selected_call()
         self.sip_flow.set_call(call)
@@ -2056,7 +1499,7 @@ class SipperWindow(QMainWindow):
 
     def _filter_sip_findings(self, findings, filter_name):
         if filter_name == "errors":
-            return [finding for finding in findings if finding["type"] != "sip_call_established"]
+            return [finding for finding in findings if is_actionable(finding)]
         if filter_name == "headers":
             return [
                 finding
@@ -2342,17 +1785,22 @@ class SipperWindow(QMainWindow):
             return
 
         filter_name = self.findings_filter.currentData()
-        findings = self._filter_findings_by_severity(self.last_viewmodel["findings"], filter_name)
+        findings = sorted(
+            self.last_viewmodel["findings"],
+            key=lambda finding: SEVERITY_ORDER.get(self._display_severity(finding), 9),
+        )
+        findings = self._filter_findings_by_severity(findings, filter_name)
         findings = self._filter_findings_by_search(findings, self.findings_search.text())
         self.findings_table_card.set_title(self._findings_filter_title(filter_name))
         top = findings[0] if findings else None
         self.findings_summary_text.setPlainText(
             "\n".join(
                 [
-                    f"Total: {len(findings)}",
-                    f"High: {self.last_viewmodel['severity_counts']['high']}",
-                    f"Medium: {self.last_viewmodel['severity_counts']['medium']}",
-                    f"Low: {self.last_viewmodel['severity_counts']['low']}",
+                    f"Exibindo: {len(findings)} de {len(self.last_viewmodel['findings'])}",
+                    f"Alta: {self._count_display_severity('high')}",
+                    f"Media: {self._count_display_severity('medium')}",
+                    f"Baixa: {self._count_display_severity('low')}",
+                    f"Informativos: {self._count_display_severity('info')}",
                     f"Camadas afetadas: {self._finding_category_summary(findings)}",
                 ]
             )
@@ -2364,8 +1812,8 @@ class SipperWindow(QMainWindow):
         self._render_finding_text(self.findings_detail_text, self._selected_finding(findings))
 
     def _filter_findings_by_severity(self, findings, filter_name):
-        if filter_name in {"high", "medium", "low"}:
-            return [finding for finding in findings if finding["severity"] == filter_name]
+        if filter_name in {"high", "medium", "low", "info"}:
+            return [finding for finding in findings if self._display_severity(finding) == filter_name]
         return findings
 
     def _filter_findings_by_search(self, findings, query):
@@ -2376,6 +1824,7 @@ class SipperWindow(QMainWindow):
             finding
             for finding in findings
             if query in finding["type"].lower()
+            or query in self._finding_title(finding).lower()
             or query in finding["source"].lower()
             or query in finding["destination"].lower()
         ]
@@ -2431,9 +1880,9 @@ class SipperWindow(QMainWindow):
         self.stats_calls_chart.set_items(
             [
                 {"label": "SIP OK", "value": sum(1 for call in calls if call["signaling_state"] == "established"), "color": palette["success"], "track": palette["surface"]},
-                {"label": "RTP OK", "value": sum(1 for call in calls if call["media_state"] == "ok"), "color": palette["accent"], "track": palette["surface"]},
-                {"label": "High", "value": sum(1 for call in calls if call["severity"] == "high"), "color": palette["danger"], "track": palette["surface"]},
-                {"label": "Medium", "value": sum(1 for call in calls if call["severity"] == "medium"), "color": palette["warning"], "track": palette["surface"]},
+                {"label": "RTP OK", "value": sum(1 for call in calls if call["media_state"] == "media_present"), "color": palette["accent"], "track": palette["surface"]},
+                {"label": "Alta", "value": sum(1 for call in calls if call["severity"] == "high"), "color": palette["danger"], "track": palette["surface"]},
+                {"label": "Media", "value": sum(1 for call in calls if call["severity"] == "medium"), "color": palette["warning"], "track": palette["surface"]},
             ],
             "vertical",
         )
@@ -2466,7 +1915,8 @@ class SipperWindow(QMainWindow):
             self.settings_export_directory.setText(directory)
 
     def _save_settings(self):
-        self.analysis_settings = AnalysisSettings(
+        self.analysis_settings = replace(
+            self.analysis_settings,
             rtp_high_jitter_threshold=self.settings_jitter.value() / 1000,
             rtp_loss_high_threshold=self.settings_loss.value(),
             max_traffic_points=self.settings_traffic_points.value(),
@@ -2565,14 +2015,14 @@ class SipperWindow(QMainWindow):
                 call["destination_ip"],
                 self._format_packet_time(call["start_time"]),
                 self._format_duration(call["duration"]),
-                call["severity"].upper(),
+                self._call_status_text(call),
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, call["dialog_key"])
                 item.setToolTip(str(value))
                 if column == 5:
-                    item.setBackground(QColor(self._severity_color(call["severity"], palette)))
+                    item.setBackground(QColor(self._call_status_color(call, palette)))
                     item.setForeground(QColor(palette["text"]))
                 table.setItem(row, column, item)
         self._restore_call_selection(table)
@@ -2585,9 +2035,9 @@ class SipperWindow(QMainWindow):
         for row, finding in enumerate(findings):
             key = self._finding_key(finding, row)
             values = [
-                finding["severity"],
+                severity_label(self._display_severity(finding)),
                 finding.get("category", "Correlacao"),
-                finding["type"],
+                self._finding_title(finding),
                 finding["source"],
                 finding["destination"],
             ]
@@ -2596,7 +2046,7 @@ class SipperWindow(QMainWindow):
                 item.setData(Qt.UserRole, key)
                 item.setToolTip(str(value))
                 if column == 0:
-                    item.setBackground(QColor(self._severity_color(finding["severity"], palette)))
+                    item.setBackground(QColor(self._severity_color(self._display_severity(finding), palette)))
                     item.setForeground(QColor(palette["text"]))
                 table.setItem(row, column, item)
         self._restore_finding_selection(table)
@@ -2609,8 +2059,8 @@ class SipperWindow(QMainWindow):
         for row, finding in enumerate(findings):
             key = self._finding_key(finding, row)
             values = [
-                finding["severity"].upper(),
-                finding["type"],
+                severity_label(self._display_severity(finding)),
+                self._finding_title(finding),
                 f"{finding['source']} -> {finding['destination']}",
                 finding.get("responsibility", "Em investigacao"),
             ]
@@ -2619,7 +2069,7 @@ class SipperWindow(QMainWindow):
                 item.setData(Qt.UserRole, key)
                 item.setToolTip(value)
                 if column == 0:
-                    item.setBackground(QColor(self._severity_color(finding["severity"], palette)))
+                    item.setBackground(QColor(self._severity_color(self._display_severity(finding), palette)))
                     item.setForeground(QColor(palette["text"]))
                 table.setItem(row, column, item)
         self._restore_finding_selection(table)
@@ -2801,7 +2251,11 @@ class SipperWindow(QMainWindow):
     def _format_packet_time(self, timestamp):
         if timestamp is None:
             return "-"
-        return f"{timestamp:.3f}"
+        try:
+            moment = datetime.fromtimestamp(float(timestamp))
+        except (OverflowError, OSError, ValueError):
+            return f"{timestamp:.3f}"
+        return moment.strftime("%H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
 
     def _format_optional_duration(self, seconds_value):
         if seconds_value is None:
@@ -2865,17 +2319,17 @@ class SipperWindow(QMainWindow):
             <div style="font-family:'Segoe UI'; color:{palette['text']};">
                 <div style="font-size:20px; font-weight:700; margin-bottom:8px;">{self._escape_html(call['call_id'])}</div>
                 <div style="margin-bottom:12px;">
-                    {self._chip_html(call['signaling_state'].upper(), self._signal_color(call['signaling_state'], palette), palette)}
+                    {self._chip_html(state_label(call['signaling_state']), self._signal_color(call['signaling_state'], palette), palette)}
                     &nbsp;
-                    {self._chip_html(call['media_state'].upper(), self._media_color(call['media_state'], palette), palette)}
+                    {self._chip_html(state_label(call['media_state']), self._media_color(call['media_state'], palette), palette)}
                     &nbsp;
-                    {self._chip_html(call['severity'].upper(), self._severity_color(call['severity'], palette), palette)}
+                    {self._chip_html('Severidade ' + severity_label(call['severity']), self._severity_color(call['severity'], palette), palette)}
                 </div>
                 <div style="margin-bottom:8px;"><b>Origem:</b> {self._escape_html(call['source_ip'])}</div>
                 <div style="margin-bottom:8px;"><b>Destino:</b> {self._escape_html(call['destination_ip'])}</div>
-                <div style="margin-bottom:8px;"><b>Midia negociada:</b> {self._escape_html(call['media_direction'])}</div>
-                <div style="margin-bottom:8px;"><b>Qualidade de midia:</b> {self._escape_html(call.get('media_quality', 'unknown'))}</div>
-                <div style="margin-bottom:8px;"><b>Issue principal:</b> {self._escape_html(call['primary_issue'] or '-')}</div>
+                <div style="margin-bottom:8px;"><b>Midia negociada:</b> {self._escape_html(state_label(call['media_direction']))}</div>
+                <div style="margin-bottom:8px;"><b>Qualidade de midia:</b> {self._escape_html(state_label(call.get('media_quality', 'unknown')))}</div>
+                <div style="margin-bottom:8px;"><b>Problema principal:</b> {self._escape_html(finding_title(call['primary_issue']) if call['primary_issue'] else 'Nenhum')}</div>
                 <div style="margin-bottom:8px;"><b>Codecs:</b> {self._escape_html(', '.join(call['codec_guesses']) or '-')}</div>
                 <div style="margin-bottom:8px;"><b>Duracao:</b> {self._format_duration(call['duration'])}</div>
                 <div style="margin-bottom:8px;"><b>INVITE para 100/180/200/ACK:</b> {self._format_optional_duration(timings.get('invite_to_trying'))} / {self._format_optional_duration(timings.get('invite_to_ringing'))} / {self._format_optional_duration(timings.get('invite_to_ok'))} / {self._format_optional_duration(timings.get('invite_to_ack'))}</div>
@@ -2980,12 +2434,13 @@ class SipperWindow(QMainWindow):
         technical_context = build_finding_evidence_context(self.last_engine_result, finding)
         references = finding.get("references", [])
         lines = [
-            f"Falha: {finding['type']}",
+            f"Falha: {self._finding_title(finding)}",
+            f"Codigo: {finding['type']}",
             f"Camada: {finding.get('category', 'Correlacao')}",
             f"De: {finding['source']}",
             f"Para: {finding['destination']}",
             f"Possivel responsavel: {finding.get('responsibility', 'Em investigacao')}",
-            f"Confianca da atribuicao: {finding.get('responsibility_confidence', 'low').upper()}",
+            f"Confianca da atribuicao: {severity_label(finding.get('responsibility_confidence', 'low'))}",
             "",
             "Por que:",
             finding.get("responsibility_reason", "Sem atribuicao conclusiva."),
@@ -3045,15 +2500,16 @@ class SipperWindow(QMainWindow):
         widget.setHtml(
             f"""
             <div style="font-family:'Segoe UI'; color:{palette['text']};">
-                <div style="font-size:18px; font-weight:700; margin-bottom:8px;">{self._escape_html(finding['type'])}</div>
+                <div style="font-size:18px; font-weight:700; margin-bottom:2px;">{self._escape_html(self._finding_title(finding))}</div>
+                <div style="color:{palette['muted']}; font-family:Consolas; margin-bottom:8px;">{self._escape_html(finding['type'])}</div>
                 <div style="margin-bottom:12px;">
-                    {self._chip_html(finding['severity'].upper(), self._severity_color(finding['severity'], palette), palette)}
+                    {self._chip_html(severity_label(self._display_severity(finding)), self._severity_color(self._display_severity(finding), palette), palette)}
                 </div>
                 <div style="margin-bottom:8px;"><b>Origem:</b> {self._escape_html(finding['source'])}</div>
                 <div style="margin-bottom:12px;"><b>Destino:</b> {self._escape_html(finding['destination'])}</div>
                 <div style="margin-bottom:12px;"><b>Camada responsavel:</b> {self._escape_html(finding.get('category', 'Correlacao'))}</div>
                 <div style="margin-bottom:8px;"><b>Possivel responsavel:</b> {self._escape_html(finding.get('responsibility', 'Em investigacao'))}</div>
-                <div style="margin-bottom:12px;"><b>Confianca da atribuicao:</b> {self._escape_html(finding.get('responsibility_confidence', 'low').upper())}</div>
+                <div style="margin-bottom:12px;"><b>Confianca da atribuicao:</b> {self._escape_html(severity_label(finding.get('responsibility_confidence', 'low')))}</div>
                 <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
                     {self._escape_html(finding.get('responsibility_reason', 'Sem atribuicao conclusiva.'))}
                 </div>
@@ -3077,7 +2533,7 @@ class SipperWindow(QMainWindow):
 
     def _finding_lines(self, findings, limit):
         return [
-            f"{finding['severity'].upper()} | {finding.get('category', 'Correlacao')} | {finding['type']}"
+            f"{severity_label(self._display_severity(finding))} | {finding.get('category', 'Correlacao')} | {self._finding_title(finding)}"
             for finding in findings[:limit]
         ]
 
@@ -3146,8 +2602,33 @@ class SipperWindow(QMainWindow):
         return {
             "high": palette["danger"],
             "medium": palette["warning"],
-            "low": palette["success"],
+            "low": palette["low"],
+            "info": palette["success"],
         }.get(severity, palette["muted"])
+
+    def _count_display_severity(self, severity):
+        return sum(
+            1 for finding in self.last_viewmodel["findings"] if self._display_severity(finding) == severity
+        )
+
+    def _display_severity(self, finding):
+        return finding.get("display_severity", finding["severity"])
+
+    def _finding_title(self, finding):
+        return finding.get("title") or finding_title(finding["type"])
+
+    def _call_status_color(self, call, palette):
+        if call["severity"] in {"high", "medium"}:
+            return self._severity_color(call["severity"], palette)
+        if call["signaling_state"] in {"established", "terminated"}:
+            return palette["success"]
+        return palette["low"]
+
+    def _call_status_text(self, call):
+        state = state_label(call["signaling_state"])
+        if call["severity"] in {"high", "medium"}:
+            return f"{state} - {severity_label(call['severity'])}"
+        return state
 
     def _signal_color(self, state, palette):
         return {
@@ -3191,9 +2672,13 @@ class SipperWindow(QMainWindow):
         )
 
 
-def launch_gui():
-    app = QApplication.instance() or QApplication(sys.argv)
+def launch_gui(argv=None):
+    argv = list(sys.argv if argv is None else argv)
+    app = QApplication.instance() or QApplication(argv)
     app.setWindowIcon(QIcon(str(LOGO_ICON_PATH)))
     window = SipperWindow()
     window.show()
+    captures = [arg for arg in argv[1:] if Path(arg).suffix.lower() in CAPTURE_SUFFIXES]
+    if captures:
+        QTimer.singleShot(0, lambda: window.open_capture(captures[0]))
     app.exec()

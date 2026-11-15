@@ -13,6 +13,7 @@ THEMES = {
         "warning": "#F5A524",
         "info": "#E5383B",
         "success": "#22A06B",
+        "low": "#3E7BD6",
         "selection": "#3D1218",
     },
     "light": {
@@ -29,6 +30,7 @@ THEMES = {
         "warning": "#F5A524",
         "info": "#2D7FD3",
         "success": "#22A06B",
+        "low": "#2D7FD3",
         "selection": "#CFE8E7",
     },
 }

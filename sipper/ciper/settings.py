@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from math import isfinite
 from pathlib import Path
 
@@ -9,10 +9,22 @@ class AnalysisSettings:
     rtp_high_jitter_threshold: float = 0.04
     rtp_loss_high_threshold: int = 2
     max_traffic_points: int = 720
-    max_pcap_size_mb: int = 1024
+    max_pcap_size_mb: int = 4096
     export_directory: str = str(Path.home())
     target_platform: str = "generic"
     target_platform_ips: str = ""
+    theme: str = "dark"
+    recent_files: list[str] = field(default_factory=list)
+
+
+MAX_RECENT_FILES = 8
+
+
+def add_recent_file(settings, file_path):
+    """Return the recent-file list with ``file_path`` moved to the top."""
+    normalized = str(Path(file_path).absolute())
+    recent = [item for item in settings.recent_files if Path(item) != Path(normalized)]
+    return [normalized, *recent][:MAX_RECENT_FILES]
 
 
 def default_settings_path():
@@ -76,6 +88,14 @@ def _validate_settings(values):
     if not isinstance(target_platform_ips, str):
         target_platform_ips = defaults.target_platform_ips
 
+    theme = values.get("theme")
+    if theme not in {"dark", "light"}:
+        theme = defaults.theme
+    recent_files = values.get("recent_files")
+    if not isinstance(recent_files, list):
+        recent_files = []
+    recent_files = [item for item in recent_files if isinstance(item, str) and item.strip()][:MAX_RECENT_FILES]
+
     return AnalysisSettings(
         rtp_high_jitter_threshold=jitter,
         rtp_loss_high_threshold=loss,
@@ -84,6 +104,8 @@ def _validate_settings(values):
         export_directory=export_directory,
         target_platform=target_platform,
         target_platform_ips=target_platform_ips,
+        theme=theme,
+        recent_files=recent_files,
     )
 
 
