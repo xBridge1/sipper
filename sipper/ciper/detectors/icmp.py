@@ -1,5 +1,5 @@
 from ciper.findings import Finding
-from scapy.layers.inet import ICMP, IP
+from ciper.packets import ensure_decoded
 
 
 UNREACHABLE_CODE_DETAILS = {
@@ -77,8 +77,8 @@ def detect_icmp_unreachable(flows):
 
         for code in codes:
             packet = _first_icmp_packet(flow, 3, code)
-            source_ip = packet[IP].src if packet is not None else flow.source_ip
-            destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+            source_ip = packet.src if packet is not None else flow.source_ip
+            destination_ip = packet.dst if packet is not None else flow.destination_ip
             if code is not None:
                 finding_type, description, recommendation = UNREACHABLE_CODE_DETAILS.get(
                     code,
@@ -130,8 +130,8 @@ def detect_icmp_time_exceeded(flows):
             continue
 
         packet = _first_icmp_packet(flow, 11)
-        source_ip = packet[IP].src if packet is not None else flow.source_ip
-        destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+        source_ip = packet.src if packet is not None else flow.source_ip
+        destination_ip = packet.dst if packet is not None else flow.destination_ip
 
         findings.append(
             Finding(
@@ -164,8 +164,8 @@ def detect_icmp_redirect(flows):
             continue
 
         packet = _first_icmp_packet(flow, 5)
-        source_ip = packet[IP].src if packet is not None else flow.source_ip
-        destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+        source_ip = packet.src if packet is not None else flow.source_ip
+        destination_ip = packet.dst if packet is not None else flow.destination_ip
 
         findings.append(
             Finding(
@@ -197,8 +197,8 @@ def detect_icmp_parameter_problem(flows):
             continue
 
         packet = _first_icmp_packet(flow, 12)
-        source_ip = packet[IP].src if packet is not None else flow.source_ip
-        destination_ip = packet[IP].dst if packet is not None else flow.destination_ip
+        source_ip = packet.src if packet is not None else flow.source_ip
+        destination_ip = packet.dst if packet is not None else flow.destination_ip
 
         findings.append(
             Finding(
@@ -223,14 +223,13 @@ def detect_icmp_parameter_problem(flows):
 
 
 def _first_icmp_packet(flow, icmp_type, code=None):
-    return next(
-        (
-            packet
-            for packet in flow.packets
-            if IP in packet
-            and ICMP in packet
-            and packet[ICMP].type == icmp_type
-            and (code is None or packet[ICMP].code == code)
-        ),
-        None,
-    )
+    for packet in flow.packets:
+        packet = ensure_decoded(packet)
+        if (
+            packet.ip_version == 4
+            and packet.transport == "ICMP"
+            and packet.icmp_type == icmp_type
+            and (code is None or packet.icmp_code == code)
+        ):
+            return packet
+    return None

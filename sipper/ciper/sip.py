@@ -1,9 +1,6 @@
 from dataclasses import dataclass, field
 
-from scapy.packet import Raw
-from scapy.layers.inet import IP, TCP, UDP
-from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment
-
+from ciper.packets import _UNSET, ensure_decoded
 from ciper.tcp_reassembly import reassemble_tcp_payloads
 
 
@@ -98,24 +95,40 @@ class SIPFlow:
 
 
 def parse_sip_message(packet):
-    payload = _extract_payload(packet)
+    packet = ensure_decoded(packet)
+    cached = packet._sip
+    if cached is not _UNSET:
+        return cached
 
-    if not payload:
-        return None
+    message = None
+    payload = packet.payload
+    if payload and _looks_like_sip(payload):
+        transport = packet.transport if packet.transport in {"UDP", "TCP"} else ""
+        message = _parse_sip_payload(
+            payload,
+            packet.src,
+            packet.dst,
+            packet.sport if transport else 0,
+            packet.dport if transport else 0,
+            packet.fragmented,
+            packet.time,
+            transport,
+        )
 
-    source_ip, destination_ip, source_port, destination_port = _extract_endpoints(packet)
-    transport = "UDP" if UDP in packet else "TCP" if TCP in packet else ""
+    packet._sip = message
+    return message
 
-    return _parse_sip_payload(
-        payload,
-        source_ip,
-        destination_ip,
-        source_port,
-        destination_port,
-        _is_ip_fragmented(packet),
-        float(packet.time),
-        transport,
-    )
+
+def _looks_like_sip(payload):
+    # Requests start with a method token and responses with "SIP/2.0"; both
+    # contain "SIP/2.0" in the start line. RTP, RTCP, TLS and most binary
+    # payloads fail the first-byte check without any decoding.
+    first = payload[0]
+    if not (65 <= first <= 90 or 97 <= first <= 122):
+        return False
+    line_end = payload.find(b"\n", 0, 4096)
+    start_line = payload[:line_end] if line_end >= 0 else payload[:4096]
+    return b"SIP/2.0" in start_line
 
 
 def _parse_sip_payload(
@@ -279,22 +292,34 @@ def _parse_sip_payload(
     )
 
 
-def build_sip_flows(packets):
+def build_sip_flows(packets, tcp_blocks=None):
+    """Build SIP dialogs from UDP packets and reassembled TCP streams.
+
+    ``tcp_blocks`` lets the caller pass blocks already produced by
+    ``reassemble_tcp_payloads`` so TCP streams are reassembled only once per
+    analysis; TCP packets in ``packets`` are then ignored.
+    """
     flows = {}
     initial_messages = {}
     messages = []
     tcp_packets = []
 
     for packet in packets:
-        if TCP in packet:
-            tcp_packets.append(packet)
+        packet = ensure_decoded(packet)
+        if packet.transport == "TCP":
+            if tcp_blocks is None:
+                tcp_packets.append(packet)
         else:
             message = parse_sip_message(packet)
             if message is not None:
                 messages.append(message)
 
-    for block in reassemble_tcp_payloads(tcp_packets):
-        messages.extend(_extract_tcp_sip_messages(block))
+    if tcp_blocks is None:
+        tcp_blocks = reassemble_tcp_payloads(tcp_packets)
+
+    for block in tcp_blocks:
+        if b"SIP/2.0" in block.payload:
+            messages.extend(_extract_tcp_sip_messages(block))
 
     for message in sorted(messages, key=lambda item: item.packet_time):
         _add_message_to_flow(flows, initial_messages, message)
@@ -542,20 +567,6 @@ def _track_media_operation(flow, message):
         flow.media_on_hold = False
 
 
-def _is_ip_fragmented(packet):
-    return bool(
-        (IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
-        or IPv6ExtHdrFragment in packet
-    )
-
-
-def _extract_payload(packet):
-    if Raw in packet:
-        return bytes(packet[Raw].load)
-
-    return b""
-
-
 def _split_sip_payload(payload):
     marker = b"\r\n\r\n"
     marker_index = payload.find(marker)
@@ -655,20 +666,6 @@ def _parse_sdp_media(text):
             media.direction = session_direction
 
     return media_descriptions
-
-
-def _extract_endpoints(packet):
-    network_layer = packet[IP] if IP in packet else packet[IPv6] if IPv6 in packet else None
-    source_ip = network_layer.src if network_layer is not None else ""
-    destination_ip = network_layer.dst if network_layer is not None else ""
-
-    if UDP in packet:
-        return source_ip, destination_ip, packet[UDP].sport, packet[UDP].dport
-
-    if TCP in packet:
-        return source_ip, destination_ip, packet[TCP].sport, packet[TCP].dport
-
-    return source_ip, destination_ip, 0, 0
 
 
 def _normalize_header_name(name):

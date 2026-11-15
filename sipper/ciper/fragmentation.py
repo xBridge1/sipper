@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 
-from scapy.layers.inet import IP, TCP, UDP
-from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment
+from ciper.packets import ensure_decoded
 
 
 @dataclass
@@ -52,6 +51,7 @@ def build_ip_fragment_groups(packets):
     groups = {}
 
     for packet in packets:
+        packet = ensure_decoded(packet)
         fragment = _extract_fragment(packet)
         if fragment is None:
             continue
@@ -89,39 +89,20 @@ def build_ip_fragment_groups(packets):
 
 
 def _extract_ports(packet):
-    if TCP in packet:
-        return int(packet[TCP].sport), int(packet[TCP].dport)
-    if UDP in packet:
-        return int(packet[UDP].sport), int(packet[UDP].dport)
+    if packet.transport in {"TCP", "UDP"}:
+        return packet.sport, packet.dport
     return None, None
 
 
 def _extract_fragment(packet):
-    if IP in packet:
-        ip_packet = packet[IP]
-        if not (ip_packet.flags.MF or ip_packet.frag > 0):
-            return None
-        return (
-            ip_packet.src,
-            ip_packet.dst,
-            int(ip_packet.proto),
-            int(ip_packet.id),
-            int(ip_packet.frag) * 8,
-            not bool(ip_packet.flags.MF),
-            bytes(ip_packet.payload),
-        )
-
-    if IPv6 in packet and IPv6ExtHdrFragment in packet:
-        ipv6_packet = packet[IPv6]
-        fragment_header = packet[IPv6ExtHdrFragment]
-        return (
-            ipv6_packet.src,
-            ipv6_packet.dst,
-            int(fragment_header.nh),
-            int(fragment_header.id),
-            int(fragment_header.offset) * 8,
-            not bool(fragment_header.m),
-            bytes(fragment_header.payload),
-        )
-
-    return None
+    if not packet.fragmented or not packet.ip_version:
+        return None
+    return (
+        packet.src,
+        packet.dst,
+        int(packet.proto or 0),
+        packet.ip_id,
+        packet.fragment_offset,
+        not packet.more_fragments,
+        packet.fragment_payload,
+    )

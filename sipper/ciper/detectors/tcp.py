@@ -1,8 +1,6 @@
 from ciper.findings import Finding
 
-from scapy.layers.inet import TCP
-
-from ciper.network import get_ip_addresses
+from ciper.packets import TCP_RST, ensure_decoded
 
 
 def detect_syn_failures(flows):
@@ -183,14 +181,15 @@ def detect_tcp_handshake_reset(flows):
         reset_packet = None
 
         for packet in flow.packets:
-            if TCP in packet and packet[TCP].flags & 0x04:
+            packet = ensure_decoded(packet)
+            if packet.transport == "TCP" and packet.tcp_flags & TCP_RST:
                 reset_packet = packet
                 break
 
         if reset_packet is None:
             continue
 
-        source_ip, destination_ip = get_ip_addresses(reset_packet)
+        source_ip, destination_ip = reset_packet.src, reset_packet.dst
 
         findings.append(
             Finding(
@@ -201,8 +200,8 @@ def detect_tcp_handshake_reset(flows):
                 destination_ip=destination_ip,
                 description="TCP connection setup was reset before completion.",
                 evidence=[
-                    f"Source: {source_ip}:{reset_packet[TCP].sport}",
-                    f"Destination: {destination_ip}:{reset_packet[TCP].dport}",
+                    f"Source: {source_ip}:{reset_packet.sport}",
+                    f"Destination: {destination_ip}:{reset_packet.dport}",
                     "RST observed during handshake: yes",
                 ],
                 recommendation=(
@@ -225,14 +224,15 @@ def detect_tcp_resets(flows):
         reset_packet = None
 
         for packet in flow.packets:
-            if TCP in packet and packet[TCP].flags & 0x04:
+            packet = ensure_decoded(packet)
+            if packet.transport == "TCP" and packet.tcp_flags & TCP_RST:
                 reset_packet = packet
                 break
 
         if reset_packet is None:
             continue
 
-        source_ip, destination_ip = get_ip_addresses(reset_packet)
+        source_ip, destination_ip = reset_packet.src, reset_packet.dst
 
         findings.append(
             Finding(
@@ -243,8 +243,8 @@ def detect_tcp_resets(flows):
                 destination_ip=destination_ip,
                 description="TCP connection was reset unexpectedly.",
                 evidence=[
-                    f"Source: {source_ip}:{reset_packet[TCP].sport}",
-                    f"Destination: {destination_ip}:{reset_packet[TCP].dport}",
+                    f"Source: {source_ip}:{reset_packet.sport}",
+                    f"Destination: {destination_ip}:{reset_packet.dport}",
                     "RST observed: yes",
                 ],
                 recommendation=(

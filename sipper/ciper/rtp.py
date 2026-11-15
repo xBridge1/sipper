@@ -1,8 +1,6 @@
 from dataclasses import dataclass, field
 
-from scapy.layers.inet import IP, UDP
-from scapy.layers.inet6 import IPv6
-from scapy.packet import Raw
+from ciper.packets import _UNSET, ensure_decoded
 
 
 RTP_PAYLOAD_TYPE_NAMES = {
@@ -116,10 +114,20 @@ class RTPStream:
 
 
 def parse_rtp_packet(packet):
-    if (IP not in packet and IPv6 not in packet) or UDP not in packet or Raw not in packet:
+    packet = ensure_decoded(packet)
+    cached = packet._rtp
+    if cached is not _UNSET:
+        return cached
+    parsed = _parse_rtp(packet)
+    packet._rtp = parsed
+    return parsed
+
+
+def _parse_rtp(packet):
+    if not packet.ip_version or packet.transport != "UDP":
         return None
 
-    payload = bytes(packet[Raw].load)
+    payload = packet.payload
 
     if len(payload) < 12:
         return None
@@ -168,20 +176,18 @@ def parse_rtp_packet(packet):
         | payload[11]
     )
 
-    network_layer = packet[IP] if IP in packet else packet[IPv6]
-
     return RTPPacket(
-        source_ip=network_layer.src,
-        destination_ip=network_layer.dst,
-        source_port=packet[UDP].sport,
-        destination_port=packet[UDP].dport,
+        source_ip=packet.src,
+        destination_ip=packet.dst,
+        source_port=packet.sport,
+        destination_port=packet.dport,
         sequence=sequence,
         timestamp=timestamp,
         ssrc=ssrc,
         payload_type=payload_type,
         marker=(payload[1] >> 7) & 0x01,
         payload_length=len(payload) - header_length - padding_length,
-        packet_time=float(packet.time),
+        packet_time=packet.time,
     )
 
 

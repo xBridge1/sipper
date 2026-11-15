@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from scapy.layers.inet import TCP
+from ciper.packets import ensure_decoded
 
 
 @dataclass
@@ -18,28 +18,20 @@ def track_tcp_packets(packets, flow):
     seen_segments = set()
 
     for packet in packets:
-        if TCP not in packet:
+        packet = ensure_decoded(packet)
+        if packet.transport != "TCP":
             continue
 
-        sequence = int(packet[TCP].seq)
-        acknowledgement = int(packet[TCP].ack)
+        sequence = packet.tcp_seq
+        # Payload real do TCP, sem cabecalho e sem padding Ethernet.
+        payload_length = len(packet.payload)
 
-        # O payload real do TCP começa depois do cabeçalho TCP.
-        payload_length = len(bytes(packet[TCP].payload))
-
-        if (
-            packet.src == flow.source_ip
-            and packet.sport == flow.source_port
-        ):
+        if packet.src == flow.source_ip and packet.sport == flow.source_port:
             direction = "forward"
         else:
             direction = "reverse"
 
-        segment_key = (
-            direction,
-            sequence,
-            payload_length,
-        )
+        segment_key = (direction, sequence, payload_length)
 
         if payload_length > 0 and segment_key in seen_segments:
             event_type = "retransmission"
@@ -53,7 +45,7 @@ def track_tcp_packets(packets, flow):
             TCPPacketEvent(
                 event_type=event_type,
                 sequence=sequence,
-                acknowledgement=acknowledgement,
+                acknowledgement=packet.tcp_ack,
                 payload_length=payload_length,
                 direction=direction,
             )

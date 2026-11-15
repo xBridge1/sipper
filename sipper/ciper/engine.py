@@ -1,5 +1,3 @@
-from itertools import chain
-
 from ciper.flows import build_tcp_flows, build_icmp_flows
 from ciper.fragmentation import build_ip_fragment_groups
 from ciper.rtp import build_rtp_streams
@@ -11,12 +9,12 @@ from ciper.sip import (
     has_matching_sip_ack,
 )
 from ciper.tls import build_tls_flows
+from ciper.tcp_reassembly import reassemble_tcp_payloads
+from ciper.packets import ensure_decoded
 from ciper.udp_flows import build_udp_flows
 from ciper.pcap_reader import iter_pcap
 from ciper.settings import AnalysisSettings
 from ciper.analysis_control import raise_if_cancelled
-from scapy.layers.inet import ICMP, IP, TCP, UDP
-from scapy.layers.inet6 import IPv6ExtHdrFragment
 from ciper.detectors.fragmentation import detect_ip_fragmentation
 from ciper.detectors.freeswitch import detect_freeswitch_compatibility
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
@@ -73,57 +71,89 @@ from ciper.detectors.tls import (
 )
 
 
-def analyze_pcap(packets, settings=None, cancel_event=None, packet_observer=None):
+ANALYSIS_STAGES = (
+    "Lendo pacotes",
+    "Montando fluxos",
+    "Analisando SIP e RTP",
+    "Executando diagnosticos",
+    "Correlacionando eventos",
+)
+
+
+def analyze_pcap(packets, settings=None, cancel_event=None, packet_observer=None, progress=None):
     return _analyze_pcap_sources(
-        lambda: _iter_with_cancellation(iter(packets), cancel_event),
+        lambda: iter(packets),
         settings,
         cancel_event,
         packet_observer,
+        progress,
     )
 
 
-def analyze_pcap_file(file_path, settings=None, cancel_event=None, packet_observer=None):
-    return _analyze_pcap_sources(
-        lambda: _iter_with_cancellation(iter_pcap(file_path), cancel_event),
-        settings,
-        cancel_event,
-        packet_observer,
-    )
+def analyze_pcap_file(file_path, settings=None, cancel_event=None, packet_observer=None, progress=None):
+    """Analyze a capture file.
+
+    ``progress``, when given, is called as ``progress(stage, fraction)`` where
+    ``stage`` is one of ``ANALYSIS_STAGES`` and ``fraction`` is the overall
+    completion between 0 and 1. Reading the file accounts for most of the
+    work, so it maps to the first 80% of the range.
+    """
+    if progress is None:
+        source = lambda: iter_pcap(file_path)
+    else:
+        def report_read(bytes_read, total_bytes):
+            progress(ANALYSIS_STAGES[0], 0.8 * bytes_read / max(1, total_bytes))
+
+        source = lambda: iter_pcap(file_path, progress=report_read)
+
+    return _analyze_pcap_sources(source, settings, cancel_event, packet_observer, progress)
 
 
-def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packet_observer=None):
+def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packet_observer=None, progress=None):
     settings = settings or AnalysisSettings()
     raise_if_cancelled(cancel_event)
+    report = progress or (lambda _stage, _fraction: None)
     tcp_packets = []
     udp_packets = []
     icmp_packets = []
     fragmented_packets = []
     packet_count = 0
+    is_cancelled = cancel_event.is_set if cancel_event is not None else None
 
     for packet in packet_source():
+        packet = ensure_decoded(packet)
         packet_count += 1
-        raise_if_cancelled(cancel_event)
+        if is_cancelled is not None and is_cancelled():
+            raise_if_cancelled(cancel_event)
         if packet_observer is not None:
             packet_observer(packet)
-        if TCP in packet:
-            tcp_packets.append(packet)
-        if UDP in packet:
+        transport = packet.transport
+        if transport == "UDP":
             udp_packets.append(packet)
-        if ICMP in packet:
+        elif transport == "TCP":
+            tcp_packets.append(packet)
+        elif transport == "ICMP":
             icmp_packets.append(packet)
-        if (
-            (IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
-            or IPv6ExtHdrFragment in packet
-        ):
+        if packet.fragmented:
             fragmented_packets.append(packet)
 
+    report(ANALYSIS_STAGES[1], 0.82)
+    raise_if_cancelled(cancel_event)
     flows = build_tcp_flows(tcp_packets)
     udp_flows = build_udp_flows(udp_packets)
     icmp_flows = build_icmp_flows(icmp_packets)
-    sip_flows = build_sip_flows(chain(tcp_packets, udp_packets))
+    tcp_blocks = reassemble_tcp_payloads(tcp_packets)
+    raise_if_cancelled(cancel_event)
+
+    report(ANALYSIS_STAGES[2], 0.88)
+    sip_flows = build_sip_flows(udp_packets, tcp_blocks=tcp_blocks)
     rtp_streams = build_rtp_streams(udp_packets, _get_rtp_clock_rates(sip_flows))
     fragment_groups = build_ip_fragment_groups(fragmented_packets)
-    tls_flows = build_tls_flows(flows)
+    tls_flows = build_tls_flows(flows, tcp_blocks=tcp_blocks)
+    del tcp_blocks
+    raise_if_cancelled(cancel_event)
+
+    report(ANALYSIS_STAGES[3], 0.93)
 
     findings = []
 
@@ -174,10 +204,13 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_icmp_time_exceeded(icmp_flows))
     findings.extend(detect_icmp_unreachable(icmp_flows))
     findings.extend(detect_ip_fragmentation(fragment_groups))
+    raise_if_cancelled(cancel_event)
+    report(ANALYSIS_STAGES[4], 0.97)
     findings.extend(correlate_findings(findings, sip_flows, rtp_streams))
     attach_references(findings)
     findings = prioritize_findings(findings)
     call_summaries = build_call_summaries(sip_flows, rtp_streams, findings)
+    report(ANALYSIS_STAGES[4], 1.0)
 
     return {
         "flows": flows,
@@ -200,12 +233,6 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
             "icmp_packet_count": len(icmp_packets),
         },
     }
-
-
-def _iter_with_cancellation(packets, cancel_event):
-    for packet in packets:
-        raise_if_cancelled(cancel_event)
-        yield packet
 
 
 def correlate_findings(findings, sip_flows, rtp_streams):

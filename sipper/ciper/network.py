@@ -1,17 +1,14 @@
-from scapy.layers.inet import IP
-from scapy.layers.inet6 import IPv6
+from ciper.packets import ensure_decoded
 
 
 def get_network_layer(packet):
-    if IP in packet:
-        return packet[IP]
-    if IPv6 in packet:
-        return packet[IPv6]
-    return None
+    """Return the decoded packet when it carries IPv4/IPv6, otherwise None."""
+    packet = ensure_decoded(packet)
+    return packet if packet.ip_version else None
 
 
 def get_ip_addresses(packet):
-    network_layer = get_network_layer(packet)
-    if network_layer is None:
+    packet = ensure_decoded(packet)
+    if not packet.ip_version:
         return "", ""
-    return network_layer.src, network_layer.dst
+    return packet.src, packet.dst

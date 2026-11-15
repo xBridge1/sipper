@@ -1,6 +1,6 @@
 from ciper.findings import Finding
 from ciper.udp_tracker import track_udp_packets
-from scapy.packet import Raw
+from ciper.packets import ensure_decoded
 
 UDP_REQUEST_RESPONSE_PORTS = {
     53,      # DNS
@@ -149,11 +149,10 @@ def _is_sip_request(packet):
 
 
 def _sip_start_line(packet):
-    if Raw not in packet:
-        return ""
-
-    payload = bytes(packet[Raw].load)
+    payload = ensure_decoded(packet).payload
     if not payload:
         return ""
-    lines = payload.decode("utf-8", errors="ignore").splitlines()
+    line_end = payload.find(b"\n", 0, 4096)
+    first_line = payload[:line_end] if line_end >= 0 else payload[:4096]
+    lines = first_line.decode("utf-8", errors="ignore").splitlines()
     return lines[0].strip().upper() if lines else ""

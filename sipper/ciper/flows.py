@@ -1,90 +1,73 @@
-from collections import defaultdict
 from dataclasses import dataclass, field
 
-from scapy.layers.inet import IP, TCP, ICMP
-
-from ciper.network import get_ip_addresses, get_network_layer
-
 from ciper.models import TCPFlow
+from ciper.packets import TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, ensure_decoded
 
 
 def build_tcp_flows(packets):
-    packet_groups = defaultdict(list)
+    flows = {}
 
     for packet in packets:
-        if get_network_layer(packet) is None or TCP not in packet:
+        packet = ensure_decoded(packet)
+        if not packet.ip_version or packet.transport != "TCP":
             continue
 
-        source_ip, destination_ip = get_ip_addresses(packet)
-        source_port = packet[TCP].sport
-        destination_port = packet[TCP].dport
-
+        source_port = packet.sport
+        destination_port = packet.dport
         if source_port == 0 or destination_port == 0:
             continue
 
-        endpoint_a = (source_ip, source_port)
-        endpoint_b = (destination_ip, destination_port)
+        endpoint_a = (packet.src, source_port)
+        endpoint_b = (packet.dst, destination_port)
+        flow_key = (endpoint_a, endpoint_b) if endpoint_a <= endpoint_b else (endpoint_b, endpoint_a)
 
-        flow_key = tuple(sorted([endpoint_a, endpoint_b]))
+        flow = flows.get(flow_key)
+        if flow is None:
+            flow = TCPFlow(
+                source_ip=packet.src,
+                source_port=source_port,
+                destination_ip=packet.dst,
+                destination_port=destination_port,
+            )
+            flows[flow_key] = flow
 
-        packet_groups[flow_key].append(packet)
+        flow.packets.append(packet)
+        flags = packet.tcp_flags
 
-    flows = {}
+        flow.packet_count += 1
+        flow.byte_count += packet.length
 
-    for flow_key, flow_packets in packet_groups.items():
-        first_packet = flow_packets[0]
+        timestamp = packet.time
+        if flow.first_timestamp is None:
+            flow.first_timestamp = timestamp
+        flow.last_timestamp = timestamp
 
-        flow = TCPFlow(
-            source_ip=get_ip_addresses(first_packet)[0],
-            source_port=first_packet[TCP].sport,
-            destination_ip=get_ip_addresses(first_packet)[1],
-            destination_port=first_packet[TCP].dport,
-        )
+        if packet.src == flow.source_ip and source_port == flow.source_port:
+            flow.packets_forward += 1
+        else:
+            flow.packets_reverse += 1
 
-        for packet in flow_packets:
-            flow.packets.append(packet)
-            flags = packet[TCP].flags
+        syn = flags & TCP_SYN
+        ack = flags & TCP_ACK
 
-            flow.packet_count += 1
-            flow.byte_count += len(packet)
+        if syn and not ack:
+            flow.syn = True
+            if flow.syn_timestamp is None:
+                flow.syn_timestamp = timestamp
 
-            timestamp = float(packet.time)
+        if syn and ack:
+            flow.syn_ack = True
+            if flow.syn_ack_timestamp is None:
+                flow.syn_ack_timestamp = timestamp
 
-            if flow.first_timestamp is None:
-                flow.first_timestamp = timestamp
+        if ack and not syn:
+            flow.ack = True
 
-            flow.last_timestamp = timestamp
+        if flags & TCP_FIN:
+            flow.fin = True
 
-            if (
-                get_ip_addresses(packet)[0] == flow.source_ip
-                and packet[TCP].sport == flow.source_port
-            ):
-                flow.packets_forward += 1
-            else:
-                flow.packets_reverse += 1
-
-            if "S" in flags and "A" not in flags:
-                flow.syn = True
-
-                if flow.syn_timestamp is None:
-                    flow.syn_timestamp = timestamp
-
-            if "S" in flags and "A" in flags:
-                flow.syn_ack = True
-
-                if flow.syn_ack_timestamp is None:
-                    flow.syn_ack_timestamp = timestamp
-
-            if "A" in flags and "S" not in flags:
-                flow.ack = True
-
-            if "F" in flags:
-                flow.fin = True
-
-            if "R" in flags:
-                flow.rst = True
-
-        flows[flow_key] = flow
+        if flags & TCP_RST:
+            flow.rst = True
 
     return flows
 
@@ -107,21 +90,19 @@ def build_icmp_flows(packets):
     flows = {}
 
     for packet in packets:
-        if IP not in packet or ICMP not in packet:
+        packet = ensure_decoded(packet)
+        if packet.ip_version != 4 or packet.transport != "ICMP":
             continue
 
-        icmp_type = packet[ICMP].type
+        icmp_type = packet.icmp_type
 
         if icmp_type not in (0, 3, 5, 8, 11, 12):
             continue
 
-        source_ip = packet[IP].src
-        destination_ip = packet[IP].dst
+        source_ip = packet.src
+        destination_ip = packet.dst
 
-        if icmp_type == 8:
-            key = (source_ip, destination_ip)
-            reverse_key = (destination_ip, source_ip)
-        elif icmp_type == 0:
+        if icmp_type == 0:
             key = (destination_ip, source_ip)
             reverse_key = (source_ip, destination_ip)
         else:
@@ -147,7 +128,7 @@ def build_icmp_flows(packets):
             flow.echo_replies += 1
         elif icmp_type == 3:
             flow.unreachable_messages += 1
-            flow.unreachable_codes.append(packet[ICMP].code)
+            flow.unreachable_codes.append(packet.icmp_code)
         elif icmp_type == 5:
             flow.redirect_messages += 1
         elif icmp_type == 11:

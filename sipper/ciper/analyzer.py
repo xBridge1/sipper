@@ -1,11 +1,40 @@
 from collections import Counter
 
-from scapy.layers.inet import IP, TCP, UDP, ICMP
-
+from ciper.analysis_control import raise_if_cancelled
+from ciper.packets import _UNSET, ensure_decoded
 from ciper.rtp import parse_rtp_packet
 from ciper.sip import parse_sip_message
-from ciper.analysis_control import raise_if_cancelled
-from ciper.network import get_ip_addresses, get_network_layer
+
+
+def classify_packet(packet):
+    """Return the display protocol of a packet: SIP, RTP, TCP, UDP, ICMP, Other or None.
+
+    ``None`` means the frame carries no IPv4/IPv6 layer. The result is cached on
+    the decoded packet, so the dashboard counters, the traffic chart and the
+    engine all share a single SIP/RTP parse per packet.
+    """
+    packet = ensure_decoded(packet)
+    kind = packet._kind
+    if kind is not _UNSET:
+        return kind
+
+    if not packet.ip_version:
+        kind = None
+    elif parse_sip_message(packet) is not None:
+        kind = "SIP"
+    elif parse_rtp_packet(packet) is not None:
+        kind = "RTP"
+    elif packet.transport == "TCP":
+        kind = "TCP"
+    elif packet.transport == "UDP":
+        kind = "UDP"
+    elif packet.transport == "ICMP":
+        kind = "ICMP"
+    else:
+        kind = "Other"
+
+    packet._kind = kind
+    return kind
 
 
 class PacketAnalysisAccumulator:
@@ -18,40 +47,17 @@ class PacketAnalysisAccumulator:
 
     def add(self, packet):
         raise_if_cancelled(self.cancel_event)
-        if get_network_layer(packet) is None:
+        packet = ensure_decoded(packet)
+        kind = classify_packet(packet)
+        if kind is None:
             return
 
-        source_ip, destination_ip = get_ip_addresses(packet)
+        self.source_ips[packet.src] += 1
+        self.destination_ips[packet.dst] += 1
+        self.protocols[kind] += 1
 
-        self.source_ips[source_ip] += 1
-        self.destination_ips[destination_ip] += 1
-
-        if parse_sip_message(packet) is not None:
-            self.protocols["SIP"] += 1
-
-        elif parse_rtp_packet(packet) is not None:
-            self.protocols["RTP"] += 1
-
-        elif TCP in packet:
-            self.protocols["TCP"] += 1
-
-            connection = (
-                source_ip,
-                packet[TCP].sport,
-                destination_ip,
-                packet[TCP].dport,
-            )
-
-            self.tcp_connections[connection] += 1
-
-        elif UDP in packet:
-            self.protocols["UDP"] += 1
-
-        elif ICMP in packet:
-            self.protocols["ICMP"] += 1
-
-        else:
-            self.protocols["Other"] += 1
+        if kind == "TCP":
+            self.tcp_connections[(packet.src, packet.sport, packet.dst, packet.dport)] += 1
 
     def result(self):
         return {

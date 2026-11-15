@@ -1,11 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 
-from scapy.layers.inet import IP, TCP
-from scapy.layers.inet6 import IPv6ExtHdrFragment
-from scapy.packet import Raw
-
-from ciper.network import get_ip_addresses, get_network_layer
+from ciper.packets import ensure_decoded
 
 
 @dataclass
@@ -24,22 +20,18 @@ def reassemble_tcp_payloads(packets):
     groups = defaultdict(list)
 
     for position, packet in enumerate(packets):
-        if TCP not in packet or Raw not in packet or get_network_layer(packet) is None:
+        packet = ensure_decoded(packet)
+        if packet.transport != "TCP" or not packet.payload or not packet.ip_version:
             continue
 
-        payload = bytes(packet[Raw].load)
-        if not payload:
-            continue
-
-        source_ip, destination_ip = get_ip_addresses(packet)
-        key = (source_ip, destination_ip, int(packet[TCP].sport), int(packet[TCP].dport))
+        key = (packet.src, packet.dst, packet.sport, packet.dport)
         groups[key].append(
             (
-                int(packet[TCP].seq),
+                packet.tcp_seq,
                 position,
-                float(packet.time),
-                payload,
-                _is_ip_fragmented(packet),
+                packet.time,
+                packet.payload,
+                packet.fragmented,
             )
         )
 
@@ -124,10 +116,3 @@ def _reassemble_direction(source_ip, destination_ip, source_port, destination_po
 
     finish_block()
     return blocks
-
-
-def _is_ip_fragmented(packet):
-    return bool(
-        (IP in packet and (packet[IP].flags.MF or packet[IP].frag > 0))
-        or IPv6ExtHdrFragment in packet
-    )

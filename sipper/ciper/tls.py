@@ -66,8 +66,15 @@ class TLSFlow:
     certificate_count: int = 0
 
 
-def build_tls_flows(tcp_flows):
+def build_tls_flows(tcp_flows, tcp_blocks=None):
+    """Detect TLS sessions in TCP flows.
+
+    ``tcp_blocks`` may contain blocks already produced by
+    ``reassemble_tcp_payloads`` for all TCP traffic, so streams are not
+    reassembled a second time.
+    """
     tls_flows = {}
+    blocks_by_flow = _group_blocks_by_flow(tcp_blocks) if tcp_blocks is not None else None
 
     for key, tcp_flow in tcp_flows.items():
         tls_flow = TLSFlow(
@@ -80,7 +87,17 @@ def build_tls_flows(tcp_flows):
         handshake_buffers = {"forward": b"", "reverse": b""}
         detected = False
 
-        for block in reassemble_tcp_payloads(tcp_flow.packets):
+        if blocks_by_flow is not None:
+            flow_blocks = blocks_by_flow.get(_flow_key(
+                tcp_flow.source_ip,
+                tcp_flow.source_port,
+                tcp_flow.destination_ip,
+                tcp_flow.destination_port,
+            ), [])
+        else:
+            flow_blocks = reassemble_tcp_payloads(tcp_flow.packets)
+
+        for block in flow_blocks:
             direction = _block_direction(block, tcp_flow)
             records, _remainder, malformed = _consume_tls_records(block.payload)
             tls_flow.malformed_records += malformed
@@ -95,6 +112,20 @@ def build_tls_flows(tcp_flows):
             tls_flows[key] = tls_flow
 
     return tls_flows
+
+
+def _flow_key(source_ip, source_port, destination_ip, destination_port):
+    endpoint_a = (source_ip, source_port)
+    endpoint_b = (destination_ip, destination_port)
+    return (endpoint_a, endpoint_b) if endpoint_a <= endpoint_b else (endpoint_b, endpoint_a)
+
+
+def _group_blocks_by_flow(blocks):
+    grouped = {}
+    for block in blocks:
+        key = _flow_key(block.source_ip, block.source_port, block.destination_ip, block.destination_port)
+        grouped.setdefault(key, []).append(block)
+    return grouped
 
 
 def _block_direction(block, tcp_flow):
@@ -118,23 +149,27 @@ def _is_likely_tls_block(block):
 def _consume_tls_records(buffer):
     records = []
     malformed = 0
+    offset = 0
+    size = len(buffer)
 
-    while len(buffer) >= 5:
-        content_type = buffer[0]
-        version = (buffer[1] << 8) | buffer[2]
-        record_length = (buffer[3] << 8) | buffer[4]
+    while size - offset >= 5:
+        content_type = buffer[offset]
+        version = (buffer[offset + 1] << 8) | buffer[offset + 2]
+        record_length = (buffer[offset + 3] << 8) | buffer[offset + 4]
 
         if content_type not in TLS_CONTENT_TYPES or version not in TLS_VERSION_NAMES or record_length > 18432:
             return records, b"", malformed + 1
 
-        record_end = 5 + record_length
-        if len(buffer) < record_end:
+        record_end = offset + 5 + record_length
+        if size < record_end:
             break
 
-        records.append((content_type, version, buffer[5:record_end]))
-        buffer = buffer[record_end:]
+        # Application data is never inspected, so its bytes are not copied.
+        payload = buffer[offset + 5:record_end] if content_type != 23 else b""
+        records.append((content_type, version, payload))
+        offset = record_end
 
-    return records, buffer, malformed
+    return records, buffer[offset:], malformed
 
 
 def _record_tls_content(tls_flow, handshake_buffers, direction, content_type, payload):
