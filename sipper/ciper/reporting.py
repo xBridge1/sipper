@@ -17,7 +17,11 @@ def build_report_payload(viewmodel, source_pcap, capture_duration):
         "protocols": viewmodel["protocols"],
         "severity_counts": viewmodel["severity_counts"],
         "calls": viewmodel["calls"],
-        "rtp_streams": viewmodel["rtp_streams"],
+        # Chart series are a GUI concern and would bloat the export.
+        "rtp_streams": [
+            {key: value for key, value in stream.items() if key != "timeline"}
+            for stream in viewmodel["rtp_streams"]
+        ],
         "findings": viewmodel["findings"],
     }
 
@@ -119,7 +123,9 @@ def build_report_html(payload):
         f"<td>{_escape(finding_title(finding['type']))}<br><small>{_escape(finding['type'])}</small></td>"
         f"<td>{_escape(finding['source'])}</td>"
         f"<td>{_escape(finding['destination'])}</td>"
-        f"<td>{_escape(finding['description'])}</td>"
+        f"<td>{_escape(finding['description'])}"
+        + "".join(f"<br><small>{_escape(item)}</small>" for item in finding.get("evidence_display", [])[:4])
+        + "</td>"
         "</tr>"
         for finding in payload["findings"]
     ) or "<tr><td colspan='5'>Nenhum finding detectado.</td></tr>"

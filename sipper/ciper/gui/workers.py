@@ -56,6 +56,7 @@ class AnalysisWorker(QObject):
             )
             self.progress_value.emit("Preparando graficos", 1.0)
             traffic_counts, traffic_labels, capture_duration = traffic_analysis.result()
+            engine_result["traffic_timebase"] = traffic_analysis.timebase()
             raise_if_cancelled(self.cancel_event)
             self.completed.emit(
                 packet_analysis.result(),
@@ -100,6 +101,18 @@ class TrafficAccumulator:
         protocol = _classify_packet_for_traffic(packet)
         if protocol in self.buckets:
             self.buckets[protocol][second] = self.buckets[protocol].get(second, 0) + 1
+
+    def _bucket_width(self):
+        span_seconds = max(1, int(self.last_time) - int(self.first_time) + 1)
+        return max(1, (span_seconds + self.max_bucket_count - 1) // self.max_bucket_count)
+
+    def timebase(self):
+        """(first second, bucket width, bucket count) to place events on the chart axis."""
+        if self.first_time is None or self.last_time is None:
+            return None
+        span_seconds = max(1, int(self.last_time) - int(self.first_time) + 1)
+        width = self._bucket_width()
+        return int(self.first_time), width, (span_seconds + width - 1) // width
 
     def result(self):
         if self.first_time is None or self.last_time is None:

@@ -41,6 +41,22 @@ def build_stylesheet(palette):
     }}
     QLabel#kpiValue {{
         color: {palette["text"]};
+        font-size: 22pt;
+        font-weight: 600;
+    }}
+    QFrame#metricTile {{
+        background: {palette["surface"]};
+        border: 1px solid {palette["border"]};
+        border-radius: 12px;
+    }}
+    QLabel#metricLabel {{
+        color: {palette["muted"]};
+        font-size: 9pt;
+    }}
+    QLabel#metricValue {{
+        color: {palette["text"]};
+        font-size: 12pt;
+        font-weight: 600;
     }}
     QLabel#kpiLabel {{
         color: {palette["muted"]};
@@ -61,6 +77,34 @@ def build_stylesheet(palette):
     QPushButton[active="true"] {{
         background: {palette["selection"]};
         border: 1px solid {palette["accent"]};
+    }}
+    QPushButton#navButton {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 7px 10px;
+    }}
+    QPushButton#navButton:hover {{
+        background: {palette["selection"]};
+        border: 1px solid {palette["border"]};
+    }}
+    QPushButton#navButton[active="true"] {{
+        background: {palette["selection"]};
+        border: 1px solid {palette["accent"]};
+    }}
+    QPushButton#navSection {{
+        background: transparent;
+        border: none;
+        color: {palette["muted"]};
+        padding: 8px 4px 2px 4px;
+        font-size: 9pt;
+        font-weight: 600;
+        letter-spacing: 0.6px;
+    }}
+    QPushButton#navSection:hover {{
+        color: {palette["text"]};
+        background: transparent;
+        border: none;
     }}
     QPushButton#primaryButton {{
         background: {palette["accent"]};
@@ -129,9 +173,11 @@ def build_stylesheet(palette):
         gridline-color: transparent;
         alternate-background-color: {palette["panel"]};
         selection-background-color: {palette["selection"]};
+        selection-color: {palette["text"]};
     }}
     QTableWidget::item:selected {{
         background: {palette["selection"]};
+        color: {palette["text"]};
     }}
     QScrollBar:vertical {{
         background: {palette["surface"]};

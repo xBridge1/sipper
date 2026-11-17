@@ -1,7 +1,11 @@
 from collections import Counter
 
 from ciper.findings import describe_responsibility
-from ciper.labels import display_severity, finding_title, severity_label, state_label
+from ciper.labels import display_severity, evidence_labels, finding_title, severity_label, state_label
+from ciper.voip_quality import estimate_mos
+
+# Charts never need more points than a panel is wide.
+TIMELINE_MAX_POINTS = 400
 
 
 def build_dashboard_viewmodel(packet_analysis, engine_result):
@@ -27,6 +31,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "type": finding.type,
                 "title": finding_title(finding.type),
                 "severity": finding.severity,
+                "confidence": getattr(finding, "confidence", 0.0),
                 "display_severity": display_severity(finding.type, finding.severity),
                 "severity_label": severity_label(display_severity(finding.type, finding.severity)),
                 "source": finding.source_ip,
@@ -34,6 +39,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "description": finding.description,
                 "recommendation": finding.recommendation,
                 "evidence": list(getattr(finding, "evidence", [])),
+                "evidence_display": evidence_labels(getattr(finding, "evidence", [])),
                 "references": list(getattr(finding, "references", [])),
                 "category": _finding_category(finding.type),
                 "responsibility": describe_responsibility(finding)[0],
@@ -47,6 +53,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
             "medium": severity_counts.get("medium", 0),
             "low": severity_counts.get("low", 0),
         },
+        "capture_timebase": engine_result.get("traffic_timebase"),
         "analysis_profile": dict(engine_result.get("analysis_profile", {})),
         "calls": [
             {
@@ -68,6 +75,7 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "finding_types": list(summary.get("finding_types", [])),
                 "codec_guesses": summary["codec_guesses"],
                 "key_evidence": summary.get("key_evidence", []),
+                "key_evidence_display": evidence_labels(summary.get("key_evidence", [])),
                 "recommended_action": summary["recommended_action"],
                 "source_ip": summary["source_ip"],
                 "destination_ip": summary["destination_ip"],
@@ -166,6 +174,7 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
             or unique_packet_count
         )
         expected_packets = loss_observed_packet_count + stream.lost_packets
+        loss_percent = (stream.lost_packets / expected_packets * 100) if expected_packets else 0.0
         items.append(
             {
                 "source": f"{stream.source_ip}:{stream.source_port}",
@@ -176,9 +185,18 @@ def _build_rtp_stream_items(rtp_streams, call_summaries):
                 "loss_observed_packet_count": loss_observed_packet_count,
                 "duplicate_packets": getattr(stream, "duplicate_packets", 0),
                 "lost_packets": stream.lost_packets,
-                "loss_percent": (stream.lost_packets / expected_packets * 100) if expected_packets else 0.0,
+                "loss_percent": loss_percent,
                 "average_jitter": stream.average_jitter,
                 "max_jitter": stream.max_jitter,
+                "peak_transit_variation": getattr(stream, "max_transit_variation", 0.0),
+                "silence_periods": getattr(stream, "silence_periods", 0),
+                "mos": estimate_mos(loss_percent, stream.max_jitter, next(iter(codec_guesses or []), None))
+                if stream.packet_count
+                else None,
+                "key": "{}:{}>{}:{}#{}".format(
+                    stream.source_ip, stream.source_port, stream.destination_ip, stream.destination_port, stream.ssrc
+                ),
+                "timeline": _stream_timeline(stream),
                 "out_of_order_packets": stream.out_of_order_packets,
                 "interruptions": stream.interruptions,
                 "duration": stream.duration,
@@ -198,7 +216,7 @@ def _finding_category(finding_type):
         return "Compatibilidade FreeSWITCH"
     if finding_type.startswith("tls_"):
         return "TLS e seguranca"
-    if finding_type.startswith("rtp_"):
+    if finding_type.startswith(("rtp_", "rtcp_")):
         return "RTP e midia"
     if finding_type.startswith("sip_"):
         if "header" in finding_type or "fragmentation" in finding_type or "content_length" in finding_type:
@@ -213,3 +231,22 @@ def _finding_category(finding_type):
     if finding_type.startswith("icmp_"):
         return "Rede ICMP"
     return "Correlacao"
+
+
+def _stream_timeline(stream):
+    """Downsampled (offset seconds, jitter) points and loss markers for charts."""
+    series = getattr(stream, "jitter_series", None) or []
+    start = getattr(stream, "first_timestamp", None) or (series[0][0] if series else 0.0)
+    points = []
+    if series:
+        bucket = max(1, len(series) // TIMELINE_MAX_POINTS)
+        for index in range(0, len(series), bucket):
+            chunk = series[index:index + bucket]
+            # Keep the worst value of each bucket so spikes stay visible.
+            point_time = chunk[-1][0]
+            points.append((max(0.0, float(point_time - start)), max(value for _time, value in chunk)))
+    losses = [
+        (max(0.0, float(event_time - start)), count)
+        for event_time, count in (getattr(stream, "loss_events", None) or [])[:TIMELINE_MAX_POINTS]
+    ]
+    return {"points": points, "losses": losses}
