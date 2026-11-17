@@ -2,6 +2,36 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [1.3.0] - 2026-11-16
+
+### Added
+
+- Leitura de RTCP (Sender/Receiver Reports): perda e jitter medidos pelo receptor e RTT estimado, com os findings `rtcp_reported_loss`, `rtcp_reported_jitter` e `rtcp_high_rtt`.
+- Novos diagnosticos SIP: retransmissoes sobre UDP (`sip_retransmission`), post-dial delay alto (`sip_slow_call_setup`) e IP privado no SDP enviado de IP publico (`sip_sdp_private_address`).
+- Comparacao SDP x RTP: payload type nao negociado (`rtp_payload_not_negotiated`), ptime diferente do negociado (`rtp_ptime_mismatch`) e RTP vindo de origem diferente da anunciada (`rtp_source_mismatch`).
+- MOS pelo E-model (ITU-T G.107) com Ie/Bpl por codec e atraso, usando o RTT do RTCP quando disponivel.
+- Pagina RTP com MOS, jitter maximo e duracao por stream, valores coloridos por gravidade e grafico de jitter/perdas no tempo para o stream selecionado.
+- Grafico de trafego com eixo secundario para protocolos de baixo volume e marcas de inicio/fim de chamada.
+- Configuracao do percentual de perda RTP para severidade alta.
+
+### Changed
+
+- Descricoes, recomendacoes e evidencias dos findings exibidas em portugues na interface e nos relatorios.
+- Perda RTP classificada por percentual (com minimo de pacotes perdidos), retransmissao TCP e pacotes fora de ordem por taxa, e nao mais por contagem absoluta.
+- Jitter alto passa a usar o jitter RFC 3550 suavizado; o pico entre dois pacotes continua visivel como evidencia.
+- Visao geral com oito indicadores, paineis de texto substituidos por grades de metricas, barra lateral compacta com secoes recolhiveis e icones monocromaticos que acompanham o tema.
+- Itens duplicados removidos (status repetido, selo de pagina e filtros que ja existem na barra lateral).
+
+### Fixed
+
+- Comfort noise (CN) e DTMF (RFC 4733) eram reportados como troca de codec e anomalia de timestamp.
+- Pausas por supressao de silencio (VAD) eram reportadas como interrupcao do stream e rebaixavam a qualidade da chamada para "Ruim".
+- Fluxos UDP curtos cujo primeiro byte parece RTP eram tratados como midia, gerando "RTP sem SIP" e "audio em uma via" falsos.
+- Reinicio de sequencia RTP era contado como milhares de pacotes perdidos ou como pacotes fora de ordem.
+- Audio em uma via era apontado quando o retorno usava outra porta (RTP nao simetrico) ou quando o SDP negociou midia unidirecional.
+- Numeros dos indicadores da visao geral apareciam pequenos porque o estilo global sobrescrevia a fonte.
+- Linha selecionada ficava ilegivel no tema claro.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added

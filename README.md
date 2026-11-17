@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
 [![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-244%20passing-brightgreen)
 
 ![SIPPER](sipper/logo/splash.png)
 
@@ -13,12 +13,12 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 ## Download
 
-Versao atual: **SIPPER 1.2.0**.
+Versao atual: **SIPPER 1.3.0**.
 
-- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-Setup-1.2.0.exe)
-- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-portable-1.2.0.zip)
-- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.2.0/SIPPER-Setup-1.2.0.exe.sha256)
-- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.2.0)
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.3.0/SIPPER-Setup-1.3.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.3.0/SIPPER-portable-1.3.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.3.0/SIPPER-Setup-1.3.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.3.0)
 
 ## Destaques
 
@@ -50,6 +50,7 @@ Versao atual: **SIPPER 1.2.0**.
 - Erros SIP `4xx`, `5xx` e `6xx`, timeout de INVITE, `200 OK` sem ACK e falhas de `REGISTER`, `REFER` e `OPTIONS`.
 - Eventos de re-INVITE, hold e resume no resumo operacional da chamada.
 - Identificacao de sinalizacao fragmentada e cabecalhos SIP excessivamente grandes.
+- Retransmissoes SIP sobre UDP, post-dial delay alto e IP privado no SDP (NAT).
 - Leitura de SDP para enderecos de midia, codecs, RTCP, `rtcp-mux` e `mid`.
 
 ### Compatibilidade FreeSWITCH
@@ -62,9 +63,13 @@ Versao atual: **SIPPER 1.2.0**.
 ### RTP
 
 - Streams por SSRC, endpoints, portas, codec estimado e duracao.
-- Packet loss, jitter RFC 3550, MOS estimado, pacotes fora de ordem e anomalias de timestamp.
-- Interrupcoes de stream, mudancas de payload type e SSRC.
+- Packet loss por percentual, jitter RFC 3550, picos de variacao entre pacotes, pacotes fora de ordem e anomalias de timestamp.
+- MOS pelo E-model (ITU-T G.107) considerando codec, perda, jitter e RTT.
+- Comfort noise, DTMF (RFC 4733) e supressao de silencio reconhecidos, sem gerar alertas falsos.
+- Interrupcoes de stream, mudancas de payload type e SSRC, e reinicio de sequencia.
 - Provavel audio em uma via e correlacao entre qualidade de midia e chamada SIP.
+- RTCP Sender/Receiver Reports: perda e jitter vistos pelo receptor e RTT estimado.
+- Comparacao com o SDP: payload type nao negociado, ptime divergente e RTP de origem diferente da anunciada (NAT).
 
 ### TLS e fragmentacao
 
