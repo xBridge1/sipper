@@ -226,9 +226,7 @@ def _combined_callcenter_risk(
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The initial INVITE combines anonymous caller identity with restricted audio direction. "
-            "This standards-compliant input can break assumptions in interactive FreeSWITCH dialplans "
-            "and mod_callcenter flows that expect an identified caller and bidirectional media."
+            "O INVITE inicial combina chamador anonimo com direcao de audio restrita. Essa entrada, valida pelos padroes, pode quebrar premissas de dialplans interativos e fluxos do mod_callcenter que esperam chamador identificado e midia bidirecional."
         ),
         evidence=[
             *_base_evidence(flow, invite),
@@ -237,10 +235,7 @@ def _combined_callcenter_risk(
             "Affected area: inbound dialplan, caller identity and mod_callcenter media",
         ],
         recommendation=(
-            "Validate the carrier offer before transferring the call to mod_callcenter. Restore caller "
-            "identity only from a trusted P-Asserted-Identity or legacy Remote-Party-ID. Treat "
-            "P-Preferred-Identity as a preference, not an assertion, and confirm whether the initial "
-            "one-way SDP direction is intentional."
+            "Valide a oferta da operadora antes de transferir a chamada ao mod_callcenter. Restaure a identidade do chamador apenas a partir de um P-Asserted-Identity confiavel ou do Remote-Party-ID legado. Trate P-Preferred-Identity como preferencia, nao assercao, e confirme se a direcao SDP unidirecional inicial e intencional."
         ),
     )
 
@@ -258,11 +253,10 @@ def _media_offer_risk(flow, invite, media):
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The initial INVITE offers inactive audio. FreeSWITCH cannot establish interactive media "
-            "for this stream."
+            "O INVITE inicial oferece audio inativo. O FreeSWITCH nao consegue estabelecer midia interativa para este stream."
             if inactive
-            else "The initial INVITE offers one-way audio. This is valid SDP, but FreeSWITCH applications "
-            "that expect bidirectional media, including call-center flows, may not behave as intended."
+            else "O INVITE inicial oferece audio em uma via. O SDP e valido, mas aplicacoes do FreeSWITCH "
+            "que esperam midia bidirecional, incluindo call centers, podem nao se comportar como esperado."
         ),
         evidence=[
             *_base_evidence(flow, invite),
@@ -270,9 +264,7 @@ def _media_offer_risk(flow, invite, media):
             "Affected area: media negotiation and interactive applications",
         ],
         recommendation=(
-            "Confirm with the carrier whether the initial media direction is intentional. Review the "
-            "Sofia profile hold behavior and do not route the call to an interactive queue until both "
-            "media directions are expected."
+            "Confirme com a operadora se a direcao inicial da midia e intencional. Revise o comportamento de hold do perfil Sofia e nao envie a chamada a uma fila interativa ate que as duas direcoes de midia sejam esperadas."
         ),
     )
 
@@ -291,8 +283,7 @@ def _anonymous_identity_risk(
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The inbound INVITE presents an anonymous From identity. FreeSWITCH derives caller_id_number "
-            "from that header unless trusted identity data is handled explicitly in the dialplan."
+            "O INVITE recebido apresenta identidade From anonima. O FreeSWITCH deriva o caller_id_number desse header, a menos que dados de identidade confiaveis sejam tratados explicitamente no dialplan."
         ),
         evidence=[
             *_base_evidence(flow, invite),
@@ -300,10 +291,7 @@ def _anonymous_identity_risk(
             "Affected variables: caller_id_number and sip_from_user",
         ],
         recommendation=(
-            "Validate identity headers at the trusted carrier boundary. If policy permits, set caller ID "
-            "from sip_p_asserted_identity or sip_remote_party_id before routing to applications that "
-            "depend on it. Access P-Preferred-Identity through sip_h_P-Preferred-Identity and do not "
-            "treat it as asserted or expose an identity protected by Privacy: id."
+            "Valide os headers de identidade na fronteira confiavel com a operadora. Se a politica permitir, defina o caller ID a partir de sip_p_asserted_identity ou sip_remote_party_id antes de rotear para aplicacoes que dependem dele. Acesse P-Preferred-Identity via sip_h_P-Preferred-Identity, sem trata-lo como assertado nem expor identidade protegida por Privacy: id."
         ),
     )
 
@@ -321,9 +309,7 @@ def _routing_target_mismatch(flow, invite):
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The Request-URI user differs from the To user. FreeSWITCH routes the call using "
-            "destination_number from the Request-URI, so an SBC rewrite can select a different "
-            "dialplan extension than the visible called identity."
+            "O usuario da Request-URI difere do usuario do To. O FreeSWITCH roteia pelo destination_number da Request-URI, entao uma reescrita no SBC pode selecionar uma extensao do dialplan diferente da identidade chamada visivel."
         ),
         evidence=[
             *_base_evidence(flow, invite),
@@ -333,8 +319,7 @@ def _routing_target_mismatch(flow, invite):
             "Assessment: this may be an intentional carrier or SBC rewrite",
         ],
         recommendation=(
-            "Confirm that the Request-URI rewrite is expected and that the selected FreeSWITCH context "
-            "contains the resulting destination_number before sending the call to a queue or application."
+            "Confirme que a reescrita da Request-URI e esperada e que o contexto do FreeSWITCH contem o destination_number resultante antes de enviar a chamada a uma fila ou aplicacao."
         ),
     )
 
@@ -360,13 +345,11 @@ def _session_timer_risk(flow, invite):
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The INVITE proposes a SIP session timer below the RFC 4028 minimum. FreeSWITCH may "
-            "normalize or reject the interval, causing setup or refresh interoperability failures."
+            "O INVITE propoe um session timer abaixo do minimo da RFC 4028. O FreeSWITCH pode normalizar ou rejeitar o intervalo, causando falhas de interoperabilidade no estabelecimento ou no refresh."
         ),
         evidence=evidence,
         recommendation=(
-            "Configure the peer to use at least 90 seconds and align the Sofia profile enable-timer, "
-            "session-timeout, and minimum-session-expires settings with the carrier policy."
+            "Configure o peer para usar pelo menos 90 segundos e alinhe enable-timer, session-timeout e minimum-session-expires do perfil Sofia com a politica da operadora."
         ),
     )
 
@@ -406,9 +389,7 @@ def _dtmf_negotiation_risk(flow, invite):
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The audio offer has no RFC 4733 telephone-event payload and the peer's Allow header "
-            "does not advertise SIP INFO. DTMF used by IVRs and call-center applications may fail "
-            "unless in-band detection is explicitly enabled."
+            "A oferta de audio nao tem payload telephone-event (RFC 4733) e o header Allow do peer nao anuncia SIP INFO. O DTMF usado por URAs e call centers pode falhar, a menos que a deteccao in-band esteja habilitada."
         ),
         evidence=[
             *_base_evidence(flow, invite),
@@ -419,8 +400,7 @@ def _dtmf_negotiation_risk(flow, invite):
             "Affected variables: rtp_2833_recv_payload and rtp_info_when_no_2833",
         ],
         recommendation=(
-            "Ask the peer to offer RFC 4733 telephone-event or support SIP INFO. If only in-band "
-            "DTMF is available, enable and validate start_dtmf in the relevant FreeSWITCH dialplan."
+            "Peca ao peer para oferecer telephone-event (RFC 4733) ou suportar SIP INFO. Se so houver DTMF in-band, habilite e valide start_dtmf no dialplan do FreeSWITCH."
         ),
     )
 
@@ -454,14 +434,11 @@ def _unusable_media_address(flow, invite):
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The initial active audio offer does not provide a usable remote RTP address. "
-            "FreeSWITCH cannot derive a reachable remote_media_ip for this stream."
+            "A oferta inicial de audio ativo nao fornece um endereco RTP remoto utilizavel. O FreeSWITCH nao consegue derivar um remote_media_ip alcancavel para este stream."
         ),
         evidence=evidence,
         recommendation=(
-            "Correct the peer or SBC SDP so the c= line contains a reachable media address. "
-            "Review NAT rewriting and the Sofia profile ext-rtp-ip configuration before routing "
-            "the call to an interactive application."
+            "Corrija o SDP do peer ou do SBC para que a linha c= contenha um endereco de midia alcancavel. Revise a reescrita de NAT e o ext-rtp-ip do perfil Sofia antes de rotear a chamada para uma aplicacao interativa."
         ),
     )
 
@@ -475,8 +452,7 @@ def _custom_header_input(flow, invite, custom_headers):
         source_ip=invite.source_ip,
         destination_ip=invite.destination_ip,
         description=(
-            "The inbound INVITE contains custom SIP headers that FreeSWITCH can expose as sip_h_ channel "
-            "variables and copy to bridged legs. They are inputs to validate, not an error by themselves."
+            "O INVITE recebido contem headers SIP personalizados que o FreeSWITCH pode expor como variaveis sip_h_ e copiar para as pernas em bridge. Sao entradas a validar, nao um erro por si so."
         ),
         evidence=[
             *_base_evidence(flow, invite),
@@ -488,7 +464,6 @@ def _custom_header_input(flow, invite, custom_headers):
             "Affected area: dialplan variables and bridged-leg header propagation",
         ],
         recommendation=(
-            "Treat custom SIP headers as untrusted input. Validate values before using them in routing or "
-            "modules, and disable sip_copy_custom_headers when propagation to the B-leg is not required."
+            "Trate headers SIP personalizados como entrada nao confiavel. Valide os valores antes de usa-los em roteamento ou modulos e desabilite sip_copy_custom_headers quando a propagacao para a perna B nao for necessaria."
         ),
     )

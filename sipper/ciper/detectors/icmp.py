@@ -5,28 +5,28 @@ from ciper.packets import ensure_decoded
 UNREACHABLE_CODE_DETAILS = {
     0: (
         "icmp_network_unreachable",
-        "ICMP Network Unreachable was observed.",
-        "Check whether the destination network is reachable and whether routing is configured correctly.",
+        "ICMP Network Unreachable foi observado.",
+        "Verifique se a rede de destino e alcancavel e se o roteamento esta configurado corretamente.",
     ),
     1: (
         "icmp_host_unreachable",
-        "ICMP Host Unreachable was observed.",
-        "Check whether the destination host is online and whether there is a valid route to reach it.",
+        "ICMP Host Unreachable foi observado.",
+        "Verifique se o host de destino esta online e se existe rota valida ate ele.",
     ),
     3: (
         "icmp_destination_unreachable",
-        "ICMP Port Unreachable was observed.",
-        "Check whether the destination service is listening on the target port and whether filtering is blocking the traffic.",
+        "ICMP Port Unreachable foi observado.",
+        "Verifique se o servico de destino esta escutando na porta e se algum filtro esta bloqueando o trafego.",
     ),
     4: (
         "icmp_fragmentation_needed",
-        "ICMP Fragmentation Needed was observed.",
-        "Check path MTU discovery, MTU settings, and any devices dropping fragmented traffic.",
+        "ICMP Fragmentation Needed foi observado.",
+        "Verifique o Path MTU Discovery, as configuracoes de MTU e equipamentos que descartam trafego fragmentado.",
     ),
     13: (
         "icmp_admin_prohibited",
-        "ICMP Communication Administratively Prohibited was observed.",
-        "Check firewall and security policy rules blocking the traffic path.",
+        "ICMP Communication Administratively Prohibited foi observado.",
+        "Verifique regras de firewall e politicas de seguranca que bloqueiam o caminho.",
     ),
 }
 
@@ -48,7 +48,7 @@ def detect_icmp_no_response(flows):
                 confidence=0.90,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="ICMP Echo Request was observed without a response.",
+                description="ICMP Echo Request foi observado sem resposta.",
                 evidence=[
                     f"Source: {flow.source_ip}",
                     f"Destination: {flow.destination_ip}",
@@ -56,9 +56,7 @@ def detect_icmp_no_response(flows):
                     f"Echo replies: {flow.echo_replies}",
                 ],
                 recommendation=(
-                    "Check whether the destination host is reachable, "
-                    "whether ICMP is being blocked by a firewall, or "
-                    "whether the destination is configured to ignore ping requests."
+                    "Verifique se o host de destino e alcancavel, se o ICMP esta bloqueado por firewall ou se o destino ignora ping."
                 ),
             )
         )
@@ -84,17 +82,16 @@ def detect_icmp_unreachable(flows):
                     code,
                     (
                         "icmp_destination_unreachable",
-                        "ICMP Destination Unreachable was observed.",
-                        "Check whether the destination host, network, or service is reachable and whether a firewall is blocking the traffic.",
+                        "ICMP Destination Unreachable foi observado.",
+                        "Verifique se o host, a rede ou o servico de destino sao alcancaveis e se um firewall esta bloqueando o trafego.",
                     ),
                 )
             else:
                 finding_type = "icmp_destination_unreachable"
-                description = "ICMP Destination Unreachable was observed."
+                description = "ICMP Destination Unreachable foi observado."
                 recommendation = (
-                    "Check whether the destination host, network, or "
-                    "service is reachable and whether a firewall is "
-                    "blocking the traffic."
+                    "Verifique se o host, a rede ou o servico de destino "
+                    "sao alcancaveis e se um firewall esta bloqueando o trafego."
                 )
 
             evidence = [
@@ -140,15 +137,14 @@ def detect_icmp_time_exceeded(flows):
                 confidence=0.95,
                 source_ip=source_ip,
                 destination_ip=destination_ip,
-                description="ICMP Time Exceeded was observed.",
+                description="ICMP Time Exceeded foi observado.",
                 evidence=[
                     f"Source: {source_ip}",
                     f"Destination: {destination_ip}",
                     f"Time Exceeded messages: {flow.time_exceeded_messages}",
                 ],
                 recommendation=(
-                    "Check network routing, TTL configuration, or "
-                    "possible routing loops between the endpoints."
+                    "Verifique o roteamento, a configuracao de TTL ou possiveis loops de roteamento entre os endpoints."
                 ),
             )
         )
@@ -174,14 +170,14 @@ def detect_icmp_redirect(flows):
                 confidence=0.90,
                 source_ip=source_ip,
                 destination_ip=destination_ip,
-                description="ICMP Redirect was observed.",
+                description="ICMP Redirect foi observado.",
                 evidence=[
                     f"Source: {source_ip}",
                     f"Destination: {destination_ip}",
                     f"Redirect messages: {flow.redirect_messages}",
                 ],
                 recommendation=(
-                    "Check routing design, gateway selection, and whether hosts are using the expected next-hop device."
+                    "Verifique o desenho de roteamento, a escolha de gateway e se os hosts usam o next-hop esperado."
                 ),
             )
         )
@@ -207,14 +203,14 @@ def detect_icmp_parameter_problem(flows):
                 confidence=0.95,
                 source_ip=source_ip,
                 destination_ip=destination_ip,
-                description="ICMP Parameter Problem was observed.",
+                description="ICMP Parameter Problem foi observado.",
                 evidence=[
                     f"Source: {source_ip}",
                     f"Destination: {destination_ip}",
                     f"Parameter problem messages: {flow.parameter_problem_messages}",
                 ],
                 recommendation=(
-                    "Check for malformed packets, protocol implementation issues, or devices modifying headers incorrectly."
+                    "Verifique pacotes malformados, problemas de implementacao do protocolo ou equipamentos alterando cabecalhos incorretamente."
                 ),
             )
         )

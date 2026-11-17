@@ -59,7 +59,7 @@ def test_open_capture_runs_analysis_and_remembers_file(window, tmp_path):
     assert window.analysis_settings.recent_files[0] == str(SAMPLE)
     assert (tmp_path / ".sipper" / "settings.json").is_file()
     titles = [window.findings_table.item(row, 2).text() for row in range(window.findings_table.rowCount())]
-    assert "Jitter alto no RTP" in titles
+    assert "Perda de pacotes RTP" in titles
     assert all("_" not in title for title in titles)
 
 

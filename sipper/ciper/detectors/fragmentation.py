@@ -22,11 +22,10 @@ def detect_ip_fragmentation(groups):
                     confidence=0.95,
                     source_ip=group.source_ip,
                     destination_ip=group.destination_ip,
-                    description="Overlapping IP fragments were observed.",
+                    description="Fragmentos IP sobrepostos foram observados.",
                     evidence=evidence,
                     recommendation=(
-                        "Check the source host and any middleboxes for malformed traffic, "
-                        "fragment reassembly inconsistencies, or security policy violations."
+                        "Verifique o host de origem e equipamentos intermediarios quanto a trafego malformado, inconsistencias na remontagem ou violacoes de politica de seguranca."
                     ),
                 )
             )
@@ -40,11 +39,10 @@ def detect_ip_fragmentation(groups):
                     confidence=0.85,
                     source_ip=group.source_ip,
                     destination_ip=group.destination_ip,
-                    description="An IP fragment set is incomplete or has missing fragment ranges.",
+                    description="Um conjunto de fragmentos IP esta incompleto ou tem intervalos faltando.",
                     evidence=evidence,
                     recommendation=(
-                        "Check MTU settings, packet loss, capture point coverage, and devices "
-                        "that may be dropping fragmented traffic."
+                        "Verifique MTU, perda de pacotes, cobertura do ponto de captura e equipamentos que possam descartar trafego fragmentado."
                     ),
                 )
             )
@@ -57,11 +55,10 @@ def detect_ip_fragmentation(groups):
                 confidence=0.95,
                 source_ip=group.source_ip,
                 destination_ip=group.destination_ip,
-                description="A complete IP fragment set was observed.",
+                description="Um conjunto completo de fragmentos IP foi observado.",
                 evidence=evidence,
                 recommendation=(
-                    "Review MTU and application message sizes. Avoiding fragmentation improves "
-                    "reliability because some network devices discard fragmented packets."
+                    "Revise o MTU e o tamanho das mensagens da aplicacao. Evitar fragmentacao aumenta a confiabilidade, pois alguns equipamentos descartam pacotes fragmentados."
                 ),
             )
         )

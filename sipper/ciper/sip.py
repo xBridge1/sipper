@@ -56,6 +56,7 @@ class SDPMediaDescription:
     rtcp_port: int | None = None
     media_id: str | None = None
     rtcp_mux: bool = False
+    ptime: int | None = None
 
 
 @dataclass
@@ -654,6 +655,12 @@ def _parse_sdp_media(text):
 
         if line.startswith("a=mid:") and current_media is not None:
             current_media.media_id = line[len("a=mid:"):].strip() or None
+            continue
+
+        if line.startswith("a=ptime:") and current_media is not None:
+            value = line[len("a=ptime:"):].strip()
+            if value.isdigit() and 0 < int(value) <= 1000:
+                current_media.ptime = int(value)
             continue
 
         if line == "a=rtcp-mux" and current_media is not None:

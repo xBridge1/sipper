@@ -19,7 +19,7 @@ def detect_tls_fatal_alerts(flows):
                 confidence=0.98,
                 source_ip=source_ip,
                 destination_ip=destination_ip,
-                description="TLS negotiation ended with a fatal alert.",
+                description="A negociacao TLS terminou com um alerta fatal.",
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
                     f"Destination: {flow.destination_ip}:{flow.destination_port}",
@@ -27,8 +27,7 @@ def detect_tls_fatal_alerts(flows):
                     f"Fatal alert: {alert}",
                 ],
                 recommendation=(
-                    "Check certificate trust, supported TLS versions and cipher suites, "
-                    "server name configuration, and TLS inspection devices."
+                    "Verifique a confianca do certificado, versoes TLS e cipher suites suportadas, configuracao de nome do servidor e equipamentos de inspecao TLS."
                 ),
             )
         )
@@ -50,7 +49,7 @@ def detect_tls_client_hello_no_response(flows):
                 confidence=0.90 if flow.reset else 0.75,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="TLS ClientHello was observed without a ServerHello response.",
+                description="ClientHello TLS foi observado sem resposta ServerHello.",
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
                     f"Destination: {flow.destination_ip}:{flow.destination_port}",
@@ -59,8 +58,7 @@ def detect_tls_client_hello_no_response(flows):
                     f"TCP reset observed: {'yes' if flow.reset else 'no'}",
                 ],
                 recommendation=(
-                    "Check whether the TLS service is reachable, whether a firewall or proxy "
-                    "blocks the handshake, and whether the server accepts the requested SNI and TLS version."
+                    "Verifique se o servico TLS e alcancavel, se firewall ou proxy bloqueia o handshake e se o servidor aceita o SNI e a versao TLS solicitados."
                 ),
             )
         )
@@ -82,15 +80,14 @@ def detect_tls_legacy_versions(flows):
                 confidence=0.95,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="A deprecated TLS version was proposed during the handshake.",
+                description="Uma versao TLS obsoleta foi proposta no handshake.",
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
                     f"Destination: {flow.destination_ip}:{flow.destination_port}",
                     f"Versions: {', '.join(sorted(flow.legacy_versions))}",
                 ],
                 recommendation=(
-                    "Disable TLS 1.0 and TLS 1.1 where possible, and configure both endpoints "
-                    "to negotiate TLS 1.2 or TLS 1.3."
+                    "Desabilite TLS 1.0 e 1.1 quando possivel e configure os dois endpoints para negociar TLS 1.2 ou TLS 1.3."
                 ),
             )
         )
@@ -112,15 +109,14 @@ def detect_tls_malformed_records(flows):
                 confidence=0.80,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="TLS records with an invalid header or length were observed.",
+                description="Registros TLS com cabecalho ou tamanho invalido foram observados.",
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
                     f"Destination: {flow.destination_ip}:{flow.destination_port}",
                     f"Malformed records: {flow.malformed_records}",
                 ],
                 recommendation=(
-                    "Check for packet corruption, protocol mismatches, TLS inspection issues, "
-                    "or a service speaking a different protocol on this port."
+                    "Verifique corrupcao de pacotes, incompatibilidade de protocolo, problemas de inspecao TLS ou um servico falando outro protocolo nesta porta."
                 ),
             )
         )
@@ -148,7 +144,7 @@ def detect_tls_weak_cipher_suites(flows):
                 confidence=0.95,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="TLS negotiation offered or selected deprecated cipher suites.",
+                description="A negociacao TLS ofereceu ou selecionou cipher suites obsoletas.",
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
                     f"Destination: {flow.destination_ip}:{flow.destination_port}",
@@ -156,8 +152,7 @@ def detect_tls_weak_cipher_suites(flows):
                     f"Negotiated weak cipher: {'yes' if negotiated_weak else 'no'}",
                 ],
                 recommendation=(
-                    "Disable RC4 and 3DES cipher suites, and prefer modern TLS 1.2 or TLS 1.3 "
-                    "cipher suites on both endpoints."
+                    "Desabilite cipher suites RC4 e 3DES e prefira suites modernas de TLS 1.2 ou TLS 1.3 nos dois endpoints."
                 ),
             )
         )

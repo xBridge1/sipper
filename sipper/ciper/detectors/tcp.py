@@ -3,6 +3,10 @@ from ciper.findings import Finding
 from ciper.packets import TCP_RST, ensure_decoded
 
 
+TCP_RETRANSMISSION_MEDIUM_PERCENT = 1.0
+TCP_RETRANSMISSION_HIGH_PERCENT = 3.0
+
+
 def detect_syn_failures(flows):
     findings = []
 
@@ -15,13 +19,10 @@ def detect_syn_failures(flows):
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
                 recommendation=(
-                    "Check whether the destination host is reachable, "
-                    "the destination port is listening, or a firewall is "
-                    "blocking the connection."
+                    "Verifique se o host de destino e alcancavel, se a porta esta escutando ou se um firewall esta bloqueando a conexao."
                 ),
                 description=(
-                    "TCP SYN was detected, but no SYN/ACK response "
-                    "was observed."
+                    "SYN TCP foi detectado, mas nenhum SYN/ACK foi observado."
                 ),
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
@@ -60,11 +61,10 @@ def detect_slow_handshakes(flows):
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
                 description=(
-                    "TCP handshake response time was unusually high."
+                    "O tempo de resposta do handshake TCP foi excepcionalmente alto."
                 ),
                 recommendation=(
-                    "Check network latency, server response time, "
-                    "firewalls, proxies, or overloaded endpoints."
+                    "Verifique latencia da rede, tempo de resposta do servidor, firewalls, proxies ou endpoints sobrecarregados."
                 ),
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
@@ -99,11 +99,9 @@ def detect_tcp_handshake_incomplete(flows):
                 confidence=0.90,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="TCP handshake started but was not completed.",
+                description="O handshake TCP comecou, mas nao foi concluido.",
                 recommendation=(
-                    "Check whether the client completed the handshake, "
-                    "whether packets were dropped, or whether a middlebox "
-                    "interrupted the connection setup."
+                    "Verifique se o cliente completou o handshake, se pacotes foram descartados ou se um equipamento intermediario interrompeu a conexao."
                 ),
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
@@ -138,12 +136,18 @@ def detect_tcp_retransmissions(flows):
         first = retransmissions[0]
         retransmission_count = len(retransmissions)
 
-        if retransmission_count >= 2:
+        # Grade by rate, not count: a handful of retransmissions in a long
+        # transfer is normal TCP behaviour.
+        retransmission_rate = retransmission_count / max(1, len(flow.packets)) * 100
+        if retransmission_count >= 2 and retransmission_rate >= TCP_RETRANSMISSION_HIGH_PERCENT:
             severity = "high"
             confidence = 0.95
-        else:
+        elif retransmission_rate >= TCP_RETRANSMISSION_MEDIUM_PERCENT:
             severity = "medium"
             confidence = 0.90
+        else:
+            severity = "low"
+            confidence = 0.85
 
         findings.append(
             Finding(
@@ -152,10 +156,9 @@ def detect_tcp_retransmissions(flows):
                 confidence=confidence,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="TCP retransmission detected.",
+                description="Retransmissao TCP detectada.",
                 recommendation=(
-                    "Check for packet loss, network congestion, "
-                    "unstable links, or problems between the endpoints."
+                    "Verifique perda de pacotes, congestionamento, links instaveis ou problemas entre os endpoints."
                 ),
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
@@ -164,6 +167,8 @@ def detect_tcp_retransmissions(flows):
                     f"Payload: {first.payload_length} bytes",
                     f"Direction: {first.direction}",
                     f"Retransmissions: {retransmission_count}",
+                    f"Packets in flow: {len(flow.packets)}",
+                    f"Retransmission rate: {retransmission_rate:.2f}%",
                 ],
             )
         )
@@ -198,16 +203,14 @@ def detect_tcp_handshake_reset(flows):
                 confidence=0.95,
                 source_ip=source_ip,
                 destination_ip=destination_ip,
-                description="TCP connection setup was reset before completion.",
+                description="O estabelecimento da conexao TCP foi resetado antes de completar.",
                 evidence=[
                     f"Source: {source_ip}:{reset_packet.sport}",
                     f"Destination: {destination_ip}:{reset_packet.dport}",
                     "RST observed during handshake: yes",
                 ],
                 recommendation=(
-                    "Check whether the destination port is closed, a firewall "
-                    "rejected the connection, or an intermediate device reset "
-                    "the session during setup."
+                    "Verifique se a porta de destino esta fechada, se um firewall rejeitou a conexao ou se um equipamento intermediario resetou a sessao."
                 ),
             )
         )
@@ -241,16 +244,14 @@ def detect_tcp_resets(flows):
                 confidence=0.95,
                 source_ip=source_ip,
                 destination_ip=destination_ip,
-                description="TCP connection was reset unexpectedly.",
+                description="A conexao TCP foi resetada inesperadamente.",
                 evidence=[
                     f"Source: {source_ip}:{reset_packet.sport}",
                     f"Destination: {destination_ip}:{reset_packet.dport}",
                     "RST observed: yes",
                 ],
                 recommendation=(
-                    "Check whether the application rejected the connection, "
-                    "a firewall terminated the session, or the service "
-                    "crashed."
+                    "Verifique se a aplicacao rejeitou a conexao, se um firewall encerrou a sessao ou se o servico caiu."
                 ),
             )
         )

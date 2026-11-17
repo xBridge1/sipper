@@ -68,7 +68,8 @@ def test_rtp_jitter_uses_rtp_timestamp_clock_rate():
 
     assert stream.clock_rate == 8000
     assert round(stream.rfc_jitter, 5) == 0.00375
-    assert round(stream.max_jitter, 3) == 0.060
+    assert round(stream.max_jitter, 5) == 0.00375
+    assert round(stream.peak_transit_variation, 3) == 0.060
 
 
 def test_mos_estimate_declines_with_loss_and_jitter():

@@ -1,6 +1,7 @@
 from ciper.flows import build_tcp_flows, build_icmp_flows
 from ciper.fragmentation import build_ip_fragment_groups
-from ciper.rtp import build_rtp_streams
+from ciper.rtcp import build_rtcp_reports
+from ciper.rtp import build_rtp_streams, filter_rtp_candidates
 from ciper.sip import (
     build_sip_flows,
     get_sip_method_responses,
@@ -48,7 +49,10 @@ from ciper.detectors.sip import (
     detect_sip_ok_without_ack,
     detect_sip_options_no_response,
     detect_sip_register_failures,
+    detect_sip_retransmissions,
+    detect_sip_sdp_private_address,
     detect_sip_signaling_fragmentation,
+    detect_sip_slow_call_setup,
     detect_sip_transfer_failures,
     detect_sip_udp_fragmentation_risk,
 )
@@ -61,6 +65,11 @@ from ciper.detectors.rtp import (
     detect_rtp_ssrc_change,
     detect_rtp_stream_interruption,
     detect_rtp_timestamp_anomaly,
+)
+from ciper.detectors.rtcp import (
+    detect_rtcp_high_rtt,
+    detect_rtcp_reported_jitter,
+    detect_rtcp_reported_loss,
 )
 from ciper.detectors.tls import (
     detect_tls_client_hello_no_response,
@@ -147,7 +156,16 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
 
     report(ANALYSIS_STAGES[2], 0.88)
     sip_flows = build_sip_flows(udp_packets, tcp_blocks=tcp_blocks)
-    rtp_streams = build_rtp_streams(udp_packets, _get_rtp_clock_rates(sip_flows))
+    rtp_streams = filter_rtp_candidates(
+        build_rtp_streams(
+            udp_packets,
+            _get_rtp_clock_rates(sip_flows),
+            _get_rtp_payload_names(sip_flows),
+        ),
+        _get_announced_media_endpoints(sip_flows),
+        _get_signaled_host_pairs(sip_flows),
+    )
+    rtcp_reports = build_rtcp_reports(udp_packets, rtp_streams)
     fragment_groups = build_ip_fragment_groups(fragmented_packets)
     tls_flows = build_tls_flows(flows, tcp_blocks=tcp_blocks)
     del tcp_blocks
@@ -185,18 +203,32 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_sip_options_no_response(sip_flows))
     findings.extend(detect_sip_udp_fragmentation_risk(sip_flows))
     findings.extend(detect_sip_signaling_fragmentation(sip_flows, fragment_groups))
+    findings.extend(detect_sip_retransmissions(sip_flows))
+    findings.extend(detect_sip_slow_call_setup(sip_flows))
+    findings.extend(detect_sip_sdp_private_address(sip_flows))
     if settings.target_platform == "freeswitch":
         findings.extend(
             detect_freeswitch_compatibility(sip_flows, settings.target_platform_ips)
         )
-    findings.extend(detect_rtp_packet_loss(rtp_streams, settings.rtp_loss_high_threshold))
+    hold_stream_keys, one_way_expected_keys = _get_negotiated_media_exceptions(sip_flows, rtp_streams)
+    findings.extend(
+        detect_rtp_packet_loss(
+            rtp_streams,
+            settings.rtp_loss_high_threshold,
+            settings.rtp_loss_high_percent,
+        )
+    )
     findings.extend(detect_rtp_out_of_order(rtp_streams))
     findings.extend(detect_rtp_high_jitter(rtp_streams, settings.rtp_high_jitter_threshold))
     findings.extend(detect_rtp_timestamp_anomaly(rtp_streams))
-    findings.extend(detect_rtp_stream_interruption(rtp_streams))
+    findings.extend(detect_rtp_stream_interruption(rtp_streams, hold_stream_keys))
     findings.extend(detect_rtp_payload_type_change(rtp_streams))
     findings.extend(detect_rtp_ssrc_change(rtp_streams))
-    findings.extend(detect_rtp_one_way_audio(rtp_streams))
+    findings.extend(detect_rtp_one_way_audio(rtp_streams, one_way_expected_keys))
+    findings.extend(detect_rtcp_reported_loss(rtcp_reports, settings.rtp_loss_high_percent))
+    findings.extend(detect_rtcp_reported_jitter(rtcp_reports, settings.rtp_high_jitter_threshold))
+    findings.extend(detect_rtcp_high_rtt(rtcp_reports))
+    findings.extend(detect_sdp_media_mismatches(sip_flows, rtp_streams))
 
     findings.extend(detect_icmp_no_response(icmp_flows))
     findings.extend(detect_icmp_redirect(icmp_flows))
@@ -209,7 +241,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(correlate_findings(findings, sip_flows, rtp_streams))
     attach_references(findings)
     findings = prioritize_findings(findings)
-    call_summaries = build_call_summaries(sip_flows, rtp_streams, findings)
+    call_summaries = build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports)
     report(ANALYSIS_STAGES[4], 1.0)
 
     return {
@@ -219,6 +251,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
         "fragment_groups": fragment_groups,
         "sip_flows": sip_flows,
         "rtp_streams": rtp_streams,
+        "rtcp_reports": rtcp_reports,
         "tls_flows": tls_flows,
         "findings": findings,
         "call_summaries": call_summaries,
@@ -266,7 +299,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                         confidence=0.95,
                         source_ip=udp_finding.source_ip,
                         destination_ip=udp_finding.destination_ip,
-                        description="UDP request had no response and ICMP unreachable indicates the service or path rejected it.",
+                        description="A requisicao UDP ficou sem resposta e um ICMP unreachable indica que o servico ou o caminho a rejeitou.",
                         evidence=[
                             f"UDP finding: {udp_finding.type}",
                             f"ICMP finding: {icmp_finding.type}",
@@ -274,9 +307,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                             f"Destination: {udp_finding.destination_ip}",
                         ],
                         recommendation=(
-                            "Check whether the destination service is listening, "
-                            "whether the target port is open, and whether any "
-                            "firewall or network policy is rejecting the traffic."
+                            "Verifique se o servico de destino esta escutando, se a porta esta aberta e se algum firewall ou politica de rede esta rejeitando o trafego."
                         ),
                     )
                 )
@@ -295,7 +326,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                     confidence=0.90,
                     source_ip=flow.source_ip,
                     destination_ip=flow.destination_ip,
-                    description="SIP call signaling completed, but no RTP media stream was observed.",
+                    description="A sinalizacao SIP da chamada foi concluida, mas nenhum stream RTP foi observado.",
                     evidence=[
                         f"Call-ID: {flow.call_id}",
                         f"Dialog-Key: {flow.dialog_key}",
@@ -304,7 +335,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                         "RTP streams observed: 0",
                     ],
                     recommendation=(
-                        "Check SDP/media negotiation, NAT traversal, RTP port reachability, or endpoints failing to start media."
+                        "Verifique a negociacao SDP, NAT, alcance das portas RTP ou endpoints que nao iniciaram a midia."
                     ),
                 )
             )
@@ -323,14 +354,13 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                     confidence=0.80,
                     source_ip=stream.source_ip,
                     destination_ip=stream.destination_ip,
-                    description="RTP media was observed without a corresponding SIP dialog.",
+                    description="Midia RTP foi observada sem um dialogo SIP correspondente.",
                     evidence=[
                         f"SSRC: {stream.ssrc}",
                         f"Packets observed: {stream.packet_count}",
                     ],
                     recommendation=(
-                        "Check whether signaling was captured, whether the call uses another signaling protocol, "
-                        "or whether media is orphaned from the expected dialog."
+                        "Verifique se a sinalizacao foi capturada, se a chamada usa outro protocolo de sinalizacao ou se a midia ficou orfa do dialogo esperado."
                     ),
                 )
             )
@@ -356,14 +386,14 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                         confidence=0.90,
                         source_ip=flow.source_ip,
                         destination_ip=flow.destination_ip,
-                        description="SIP call was established, but RTP indicates probable one-way audio.",
+                        description="A chamada SIP foi estabelecida, mas o RTP indica provavel audio em uma via.",
                         evidence=[
                             f"Call-ID: {flow.call_id}",
                             f"Dialog-Key: {flow.dialog_key}",
                             f"RTP finding: {finding.type}",
                         ],
                         recommendation=(
-                            "Check NAT traversal, SDP media addresses, firewall rules, and whether both endpoints can send and receive RTP."
+                            "Verifique NAT, enderecos de midia no SDP, regras de firewall e se os dois endpoints conseguem enviar e receber RTP."
                         ),
                     )
                 )
@@ -391,7 +421,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                             confidence=0.85,
                             source_ip=stream.source_ip,
                             destination_ip=stream.destination_ip,
-                            description="RTP media was observed after SIP BYE terminated the call.",
+                            description="Midia RTP foi observada depois que o BYE SIP encerrou a chamada.",
                             evidence=[
                                 f"Call-ID: {flow.call_id}",
                                 f"Dialog-Key: {flow.dialog_key}",
@@ -400,7 +430,7 @@ def correlate_findings(findings, sip_flows, rtp_streams):
                                 f"Media after BYE: {teardown_delay:.3f} s",
                             ],
                             recommendation=(
-                                "Check delayed media teardown, endpoint behavior after hangup, or media streams not stopping when signaling ends."
+                                "Verifique atraso no encerramento da midia, comportamento do endpoint apos desligar ou streams que nao param quando a sinalizacao termina."
                             ),
                         )
                     )
@@ -441,7 +471,7 @@ def prioritize_findings(findings):
     return prioritized
 
 
-def build_call_summaries(sip_flows, rtp_streams, findings):
+def build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports=None):
     summaries = []
 
     for flow in sip_flows.values():
@@ -450,6 +480,7 @@ def build_call_summaries(sip_flows, rtp_streams, findings):
         related_findings = _get_related_call_findings(flow, findings, related_streams)
         codec_guesses = _get_codec_guesses(related_streams, sdp_media)
         rtp_metrics = _get_rtp_metrics(related_streams, codec_guesses)
+        rtp_metrics["rtt"] = _get_related_rtt(related_streams, rtcp_reports)
 
         summaries.append(
             {
@@ -767,6 +798,11 @@ def _get_rtp_metrics(related_streams, codec_guesses=None):
         "interruptions": sum(stream.interruptions for stream in related_streams),
         "average_jitter": (sum(jitter_samples) / len(jitter_samples)) if jitter_samples else 0.0,
         "max_jitter": max((stream.max_jitter for stream in related_streams), default=0.0),
+        "peak_transit_variation": max(
+            (getattr(stream, "max_transit_variation", 0.0) for stream in related_streams),
+            default=0.0,
+        ),
+        "silence_periods": sum(getattr(stream, "silence_periods", 0) for stream in related_streams),
         "rfc_jitter": max((stream.rfc_jitter for stream in related_streams), default=0.0),
         "clock_rates": sorted({stream.clock_rate for stream in related_streams}),
         "codec_guesses": codec_guesses or [],
@@ -785,16 +821,18 @@ def _get_media_quality_metrics(rtp_metrics):
         }
 
     codec = next(iter(rtp_metrics.get("codec_guesses", [])), None)
+    rtt = rtp_metrics.get("rtt")
     mos = estimate_mos(
         rtp_metrics["loss_percent"],
         rtp_metrics["max_jitter"],
         codec,
+        rtt,
     )
     return {
         "mos_estimate": mos,
-        "latency_ms": None,
-        "latency_status": "not_available_in_passive_capture",
-        "method": "loss_and_rtp_transit_variation",
+        "latency_ms": round(rtt * 1000 / 2, 1) if rtt is not None else None,
+        "latency_status": "estimated_from_rtcp_rtt" if rtt is not None else "not_available_in_passive_capture",
+        "method": "itu_t_g107_e_model",
     }
 
 
@@ -1060,3 +1098,204 @@ def _get_recommended_action(related_findings):
         return related_findings[0].recommendation
 
     return ""
+
+
+def _get_rtp_payload_names(sip_flows):
+    names = {}
+    for flow in sip_flows.values():
+        for message in flow.messages:
+            for media in message.sdp_media:
+                if media.media_type != "audio":
+                    continue
+                address = media.connection_address or message.source_ip
+                for payload_type, codec in media.codecs.items():
+                    names.setdefault((address, media.port, payload_type), []).append(
+                        (float(message.packet_time), codec)
+                    )
+    return names
+
+
+def _get_announced_media_endpoints(sip_flows):
+    endpoints = set()
+    for flow in sip_flows.values():
+        for message in flow.messages:
+            for media in message.sdp_media:
+                if media.port <= 0:
+                    continue
+                address = media.connection_address or message.source_ip
+                endpoints.add((address, media.port))
+                if media.rtcp_port:
+                    endpoints.add((address, media.rtcp_port))
+    return endpoints
+
+
+def _get_signaled_host_pairs(sip_flows):
+    pairs = set()
+    for flow in sip_flows.values():
+        hosts = {flow.source_ip, flow.destination_ip}
+        for message in flow.messages:
+            for media in message.sdp_media:
+                if media.connection_address:
+                    hosts.add(media.connection_address)
+        hosts = sorted(hosts)
+        for index, first in enumerate(hosts):
+            for second in hosts[index + 1:]:
+                pairs.add(frozenset((first, second)))
+    return pairs
+
+
+def _stream_key(stream):
+    return (
+        stream.source_ip,
+        stream.destination_ip,
+        stream.source_port,
+        stream.destination_port,
+        stream.ssrc,
+    )
+
+
+def _get_negotiated_media_exceptions(sip_flows, rtp_streams):
+    """Streams whose gaps or single direction are explained by the SDP.
+
+    Returns (keys whose gaps are explained by hold, keys where one-way media
+    was negotiated on purpose).
+    """
+    hold_keys = set()
+    one_way_keys = set()
+    for flow in sip_flows.values():
+        related = _get_related_rtp_streams(flow, rtp_streams)
+        if not related:
+            continue
+        keys = {_stream_key(stream) for stream in related}
+        if flow.hold_events:
+            hold_keys.update(keys)
+        if _get_media_negotiation_state(flow) in {"unidirectional", "inactive"}:
+            one_way_keys.update(keys)
+    return hold_keys, one_way_keys
+
+
+def _get_related_rtt(related_streams, rtcp_reports):
+    if not rtcp_reports or not related_streams:
+        return None
+    ssrcs = {stream.ssrc for stream in related_streams}
+    samples = [
+        report.max_rtt
+        for report in rtcp_reports.values()
+        if report.source_ssrc in ssrcs and report.max_rtt is not None
+    ]
+    return max(samples) if samples else None
+
+
+def _observed_ptime_ms(stream):
+    deltas = []
+    previous = None
+    auxiliary = getattr(stream, "auxiliary_payload_types", set())
+    for packet in stream.packets:
+        if packet.payload_type in auxiliary:
+            continue
+        if previous is not None and (packet.sequence - previous.sequence) & 0xFFFF == 1:
+            delta = (packet.timestamp - previous.timestamp) & 0xFFFFFFFF
+            if 0 < delta < stream.clock_rate:
+                deltas.append(delta)
+        previous = packet
+    if len(deltas) < 5:
+        return None
+    deltas.sort()
+    return deltas[len(deltas) // 2] / stream.clock_rate * 1000
+
+
+def detect_sdp_media_mismatches(sip_flows, rtp_streams):
+    """Compare what SDP negotiated with what RTP actually carried."""
+    findings = []
+    for flow in sip_flows.values():
+        related = _get_related_rtp_streams(flow, rtp_streams)
+        audio = [
+            (message, media)
+            for message in flow.messages
+            for media in message.sdp_media
+            if media.media_type == "audio" and media.port > 0
+        ]
+        if not related or not audio:
+            continue
+
+        negotiated = {payload_type for _message, media in audio for payload_type in media.payload_types}
+        ptimes = {media.ptime for _message, media in audio if media.ptime}
+        advertised = {
+            (media.connection_address or message.source_ip, media.port)
+            for message, media in audio
+        }
+
+        for stream in related:
+            unexpected = sorted(getattr(stream, "media_payload_types", stream.payload_types) - negotiated)
+            if negotiated and unexpected:
+                findings.append(
+                    Finding(
+                        type="rtp_payload_not_negotiated",
+                        severity="medium",
+                        confidence=0.85,
+                        source_ip=stream.source_ip,
+                        destination_ip=stream.destination_ip,
+                        description="O RTP usa um payload type que nao foi negociado no SDP.",
+                        evidence=[
+                            f"Call-ID: {flow.call_id}",
+                            f"Dialog-Key: {flow.dialog_key}",
+                            f"SSRC: {stream.ssrc}",
+                            f"Payload types: {unexpected}",
+                            f"Negotiated payload types: {sorted(negotiated)}",
+                        ],
+                        recommendation=(
+                            "O endpoint ignorou a negociacao ou um intermediario transcodificou sem atualizar o SDP. "
+                            "O receptor pode descartar a midia, gerando silencio ou ruido."
+                        ),
+                    )
+                )
+
+            observed_ptime = _observed_ptime_ms(stream)
+            if ptimes and observed_ptime is not None and all(abs(observed_ptime - ptime) > 5 for ptime in ptimes):
+                findings.append(
+                    Finding(
+                        type="rtp_ptime_mismatch",
+                        severity="low",
+                        confidence=0.75,
+                        source_ip=stream.source_ip,
+                        destination_ip=stream.destination_ip,
+                        description="A paquetizacao observada no RTP difere do ptime negociado no SDP.",
+                        evidence=[
+                            f"Call-ID: {flow.call_id}",
+                            f"Dialog-Key: {flow.dialog_key}",
+                            f"SSRC: {stream.ssrc}",
+                            f"Observed ptime: {observed_ptime:.0f} ms",
+                            f"SDP ptime: {', '.join(f'{value} ms' for value in sorted(ptimes))}",
+                        ],
+                        recommendation=(
+                            "Alinhe o ptime dos endpoints. Diferencas costumam ser toleradas, mas alguns gateways "
+                            "e jitter buffers falham com tamanhos de pacote inesperados."
+                        ),
+                    )
+                )
+
+            destination = (stream.destination_ip, stream.destination_port)
+            source = (stream.source_ip, stream.source_port)
+            if destination in advertised and source not in advertised:
+                findings.append(
+                    Finding(
+                        type="rtp_source_mismatch",
+                        severity="low",
+                        confidence=0.70,
+                        source_ip=stream.source_ip,
+                        destination_ip=stream.destination_ip,
+                        description="O RTP chega de um endereco ou porta diferente do anunciado no SDP pelo remetente.",
+                        evidence=[
+                            f"Call-ID: {flow.call_id}",
+                            f"Dialog-Key: {flow.dialog_key}",
+                            f"SSRC: {stream.ssrc}",
+                            f"RTP source: {stream.source_ip}:{stream.source_port}",
+                            f"SDP audio endpoints: {', '.join(f'{ip}:{port}' for ip, port in sorted(advertised))}",
+                        ],
+                        recommendation=(
+                            "Indica NAT ou RTP nao simetrico. Se houver audio em uma via, habilite media latching / "
+                            "symmetric RTP no SBC ou PBX e revise o NAT do endpoint."
+                        ),
+                    )
+                )
+    return findings

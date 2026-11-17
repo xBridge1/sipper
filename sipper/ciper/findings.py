@@ -56,7 +56,16 @@ def describe_responsibility(finding):
     }:
         return "Destino ou caminho", "medium", "O destino nao respondeu; firewall, proxy ou caminho tambem podem estar envolvidos."
 
-    if finding_type.startswith("rtp_"):
+    if finding_type == "sip_sdp_private_address":
+        return "Origem", "high", "O endpoint de origem anunciou no SDP um endereco que o outro lado nao alcanca."
+
+    if finding_type in {"sip_retransmission", "sip_slow_call_setup"}:
+        return "Destino ou caminho", "medium", "O destino demorou a responder ou mensagens se perderam no caminho."
+
+    if finding_type in {"rtp_payload_not_negotiated", "rtp_ptime_mismatch", "rtp_source_mismatch"}:
+        return "Origem", "medium", "O remetente do RTP nao seguiu o que foi negociado no SDP; um SBC ou NAT tambem pode ter alterado o fluxo."
+
+    if finding_type.startswith(("rtp_", "rtcp_")):
         return "Caminho de rede", "medium", "A evidencia aponta para degradacao entre os endpoints, sem atribuir falha a apenas um lado."
 
     if finding_type.startswith("ip_fragment") or "fragmentation" in finding_type:

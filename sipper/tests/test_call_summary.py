@@ -33,9 +33,11 @@ def test_engine_builds_call_summary_for_established_call_with_media_issue():
             b"Call-ID: call-summary\r\n"
             b"CSeq: 1 ACK\r\n\r\n"
         ),
-        make_rtp_packet("192.168.1.10", "192.168.1.20", 4000, 4002, 100, 160, 1234),
-        make_rtp_packet("192.168.1.10", "192.168.1.20", 4000, 4002, 102, 480, 1234),
-        make_rtp_packet("192.168.1.10", "192.168.1.20", 4000, 4002, 103, 640, 1234),
+        *[
+            make_rtp_packet("192.168.1.10", "192.168.1.20", 4000, 4002, sequence, 160 * (sequence - 99), 1234)
+            for sequence in range(100, 115)
+            if sequence != 101
+        ],
     ]
 
     result = analyze_pcap(packets)
@@ -59,9 +61,9 @@ def test_engine_builds_call_summary_for_established_call_with_media_issue():
     assert summary["start_time"] is not None
     assert summary["end_time"] is not None
     assert summary["duration"] >= 0
-    assert summary["rtp_metrics"]["packet_count"] == 3
+    assert summary["rtp_metrics"]["packet_count"] == 14
     assert summary["rtp_metrics"]["lost_packets"] == 1
-    assert summary["rtp_metrics"]["loss_percent"] == 25.0
+    assert round(summary["rtp_metrics"]["loss_percent"], 2) == 6.67
     assert summary["rtp_metrics"]["ssrcs"] == [1234]
 
 

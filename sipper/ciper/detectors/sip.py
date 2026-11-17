@@ -1,3 +1,5 @@
+import ipaddress
+
 from ciper.findings import Finding
 from ciper.sip import (
     SIP_FRAGMENTATION_RISK_HEADER_BYTES,
@@ -28,7 +30,7 @@ def detect_sip_invite_no_response(flows):
                 confidence=0.95,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="SIP INVITE was observed without any SIP response.",
+                description="INVITE SIP foi observado sem nenhuma resposta SIP.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"Source: {flow.source_ip}",
@@ -37,9 +39,7 @@ def detect_sip_invite_no_response(flows):
                     "INVITE responses: 0",
                 ],
                 recommendation=(
-                    "Check whether the SIP server or peer is reachable, "
-                    "whether SIP signaling is being blocked, or whether the "
-                    "destination is not processing the call setup."
+                    "Verifique se o servidor SIP ou peer e alcancavel, se a sinalizacao esta bloqueada ou se o destino nao esta processando a chamada."
                 ),
             )
         )
@@ -68,7 +68,7 @@ def detect_sip_error_responses(flows):
                 confidence=0.95,
                 source_ip=first_error.source_ip,
                 destination_ip=first_error.destination_ip,
-                description="SIP call setup received an error response.",
+                description="O estabelecimento da chamada SIP recebeu uma resposta de erro.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"Status: {first_error.status_code} {first_error.reason_phrase}",
@@ -76,8 +76,7 @@ def detect_sip_error_responses(flows):
                     f"INVITE error responses: {len(error_messages)}",
                 ],
                 recommendation=(
-                    "Check SIP routing, authentication, dial plan, or the "
-                    "destination endpoint availability based on the returned status code."
+                    "Verifique roteamento SIP, autenticacao, dial plan ou disponibilidade do destino conforme o codigo de status retornado."
                 ),
             )
         )
@@ -110,7 +109,7 @@ def detect_sip_ok_without_ack(flows):
                 confidence=0.95,
                 source_ip=missing_ack.source_ip,
                 destination_ip=missing_ack.destination_ip,
-                description="SIP 200 OK was observed without a matching ACK.",
+                description="200 OK SIP foi observado sem o ACK correspondente.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"INVITEs: {flow.invites}",
@@ -119,8 +118,7 @@ def detect_sip_ok_without_ack(flows):
                     f"Unacknowledged CSeq: {missing_ack.cseq_number or 'unknown'}",
                 ],
                 recommendation=(
-                    "Check whether the caller sent the ACK, whether signaling "
-                    "packets were lost, or whether NAT/firewall handling is breaking the dialog."
+                    "Verifique se o chamador enviou o ACK, se pacotes de sinalizacao foram perdidos ou se NAT/firewall esta quebrando o dialogo."
                 ),
             )
         )
@@ -146,7 +144,7 @@ def detect_sip_call_established(flows):
                 confidence=0.98,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="SIP call setup completed successfully.",
+                description="O estabelecimento da chamada SIP foi concluido com sucesso.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"INVITEs: {flow.invites}",
@@ -155,8 +153,7 @@ def detect_sip_call_established(flows):
                     f"ACKs: {flow.acknowledgements}",
                 ],
                 recommendation=(
-                    "Call signaling appears complete. If there is still a voice issue, "
-                    "the next step is to inspect RTP media quality and direction."
+                    "A sinalizacao parece completa. Se ainda houver problema de voz, o proximo passo e inspecionar qualidade e direcao do RTP."
                 ),
             )
         )
@@ -178,15 +175,14 @@ def detect_sip_call_cancelled(flows):
                 confidence=0.95,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="SIP call attempt was cancelled before completion.",
+                description="A tentativa de chamada SIP foi cancelada antes de completar.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"INVITEs: {flow.invites}",
                     f"CANCELs: {flow.cancels}",
                 ],
                 recommendation=(
-                    "Check whether the caller aborted the setup intentionally or "
-                    "whether delays in call setup caused the cancellation."
+                    "Verifique se o chamador desistiu intencionalmente ou se atrasos no estabelecimento causaram o cancelamento."
                 ),
             )
         )
@@ -212,7 +208,7 @@ def detect_sip_call_terminated(flows):
                 confidence=0.95,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="SIP call was established and later terminated with BYE.",
+                description="A chamada SIP foi estabelecida e depois encerrada com BYE.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"INVITE 2xx responses: {len(success_responses)}",
@@ -220,8 +216,7 @@ def detect_sip_call_terminated(flows):
                     f"BYEs: {flow.byes}",
                 ],
                 recommendation=(
-                    "Call signaling shows a normal call teardown. If users reported "
-                    "an unexpected drop, correlate this with RTP timing and endpoint behavior."
+                    "A sinalizacao mostra encerramento normal. Se usuarios relataram queda inesperada, correlacione com o tempo do RTP e o comportamento dos endpoints."
                 ),
             )
         )
@@ -249,15 +244,14 @@ def detect_sip_large_headers(flows):
                 confidence=0.90,
                 source_ip=message.source_ip if message else flow.source_ip,
                 destination_ip=message.destination_ip if message else flow.destination_ip,
-                description="SIP message contains unusually large headers.",
+                description="A mensagem SIP contem headers excepcionalmente grandes.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"Messages with large headers: {flow.large_header_messages}",
                     f"Header fragmentation risks: {flow.header_fragmentation_risk_messages}",
                 ],
                 recommendation=(
-                    "Check whether SIP headers are oversized due to excessive routing, "
-                    "identity, or contact information that could stress MTU limits."
+                    "Verifique se os headers SIP estao grandes por excesso de roteamento, identidade ou contato, pressionando o limite de MTU."
                 ),
             )
         )
@@ -281,14 +275,13 @@ def detect_sip_header_validation_errors(flows):
                     confidence=0.95,
                     source_ip=message.source_ip if message else flow.source_ip,
                     destination_ip=message.destination_ip if message else flow.destination_ip,
-                    description="SIP messages contain malformed header lines.",
+                    description="Mensagens SIP contem linhas de header malformadas.",
                     evidence=[
                         *_flow_evidence(flow),
                         f"Messages with invalid headers: {flow.invalid_header_messages}",
                     ],
                     recommendation=(
-                        "Check SIP message generation and any SBC, proxy, or inspection device "
-                        "that may be rewriting headers."
+                        "Verifique a geracao das mensagens SIP e qualquer SBC, proxy ou equipamento de inspecao que possa reescrever headers."
                     ),
                 )
             )
@@ -305,14 +298,13 @@ def detect_sip_header_validation_errors(flows):
                     confidence=0.95,
                     source_ip=message.source_ip if message else flow.source_ip,
                     destination_ip=message.destination_ip if message else flow.destination_ip,
-                    description="SIP Content-Length does not match the message body size.",
+                    description="O Content-Length SIP nao corresponde ao tamanho do corpo da mensagem.",
                     evidence=[
                         *_flow_evidence(flow),
                         f"Content-Length mismatches: {flow.content_length_mismatches}",
                     ],
                     recommendation=(
-                        "Correct the SIP message generator or intermediary rewriting the body. "
-                        "A mismatched Content-Length can break parsing and TCP stream reassembly."
+                        "Corrija o gerador da mensagem SIP ou o intermediario que reescreve o corpo. Content-Length divergente pode quebrar o parsing e a remontagem TCP."
                     ),
                 )
             )
@@ -339,15 +331,14 @@ def detect_sip_header_fragmentation_risk(flows):
                 confidence=0.90,
                 source_ip=message.source_ip if message else flow.source_ip,
                 destination_ip=message.destination_ip if message else flow.destination_ip,
-                description="SIP header block size creates a high risk of IP fragmentation.",
+                description="O tamanho do bloco de headers SIP cria alto risco de fragmentacao IP.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"Oversized header blocks: {flow.header_fragmentation_risk_messages}",
                     "Header threshold: 1200 bytes",
                 ],
                 recommendation=(
-                    "Reduce oversized Via, Route, Record-Route, Contact, and identity headers, "
-                    "or use TCP/TLS transport where appropriate."
+                    "Reduza headers Via, Route, Record-Route, Contact e de identidade muito grandes, ou use transporte TCP/TLS quando apropriado."
                 ),
             )
         )
@@ -375,15 +366,14 @@ def detect_sip_udp_fragmentation_risk(flows):
                 confidence=0.90,
                 source_ip=message.source_ip if message else flow.source_ip,
                 destination_ip=message.destination_ip if message else flow.destination_ip,
-                description="SIP messages over UDP exceed the safe 1200-byte MTU budget.",
+                description="Mensagens SIP sobre UDP excedem o limite seguro de 1200 bytes para o MTU.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"Oversized SIP/UDP messages: {flow.udp_fragmentation_risk_messages}",
                     "Safe message threshold: 1200 bytes",
                 ],
                 recommendation=(
-                    "Reduce SIP message size or use TCP/TLS where supported. UDP packets above "
-                    "the path MTU can be fragmented or silently dropped."
+                    "Reduza o tamanho das mensagens SIP ou use TCP/TLS quando suportado. Pacotes UDP acima do MTU do caminho podem ser fragmentados ou descartados silenciosamente."
                 ),
             )
         )
@@ -408,7 +398,7 @@ def detect_sip_signaling_fragmentation(flows, fragment_groups=None):
                 confidence=0.90,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="Fragmented IP packets were observed carrying SIP signaling.",
+                description="Pacotes IP fragmentados foram observados carregando sinalizacao SIP.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"Fragmented SIP messages: {flow.fragmented_messages}",
@@ -416,8 +406,7 @@ def detect_sip_signaling_fragmentation(flows, fragment_groups=None):
                     f"TCP-segmented SIP messages: {flow.tcp_segmented_messages}",
                 ],
                 recommendation=(
-                    "Check MTU, transport choice, and SIP message size. Fragmented "
-                    "signaling can be dropped by network devices and break call setup."
+                    "Verifique MTU, transporte escolhido e tamanho das mensagens SIP. Sinalizacao fragmentada pode ser descartada por equipamentos e quebrar o estabelecimento."
                 ),
             )
         )
@@ -430,8 +419,8 @@ def detect_sip_register_failures(flows):
         flows,
         "REGISTER",
         "sip_register_failure",
-        "SIP registration was rejected by the registrar.",
-        "Check credentials, realm configuration, registration policy, and reachability of the registrar.",
+        "O registro SIP foi rejeitado pelo registrar.",
+        "Verifique credenciais, realm, politica de registro e alcance do registrar.",
     )
 
 
@@ -440,8 +429,8 @@ def detect_sip_transfer_failures(flows):
         flows,
         "REFER",
         "sip_transfer_failure",
-        "SIP call transfer request was rejected.",
-        "Check transfer permissions, Refer-To routing, dial plan, and the target endpoint availability.",
+        "A transferencia de chamada SIP foi rejeitada.",
+        "Verifique permissoes de transferencia, roteamento do Refer-To, dial plan e disponibilidade do destino.",
     )
 
 
@@ -470,14 +459,14 @@ def detect_sip_options_no_response(flows):
                 confidence=0.85,
                 source_ip=request.source_ip,
                 destination_ip=request.destination_ip,
-                description="SIP OPTIONS capability probe received no response.",
+                description="A sonda SIP OPTIONS nao recebeu resposta.",
                 evidence=[
                     *_flow_evidence(flow),
                     f"OPTIONS requests: {len(options_requests)}",
                     "OPTIONS responses: 0",
                 ],
                 recommendation=(
-                    "Check SIP reachability, OPTIONS keepalive configuration, firewall rules, and the destination SIP service."
+                    "Verifique o alcance SIP, a configuracao de keepalive OPTIONS, regras de firewall e o servico SIP de destino."
                 ),
             )
         )
@@ -549,3 +538,189 @@ def _fragment_group_matches_message(group, message):
         message.source_port,
         message.destination_port,
     )
+
+
+# RFC 3261 timer T1. Copies closer than this are capture duplicates (same
+# packet seen on two interfaces), not retransmissions.
+SIP_RETRANSMISSION_MIN_INTERVAL = 0.4
+# Post-dial delay (INVITE to first 180/183) thresholds in seconds.
+SIP_PDD_MEDIUM_SECONDS = 5.0
+SIP_PDD_HIGH_SECONDS = 10.0
+# Carrier-grade NAT space (RFC 6598) is not flagged by ipaddress.is_private.
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+def detect_sip_retransmissions(flows):
+    """Requests or responses resent over UDP: signaling packets are being lost."""
+    findings = []
+    for flow in flows.values():
+        copies = {}
+        for message in flow.messages:
+            if message.transport != "UDP":
+                continue
+            key = (
+                message.is_request,
+                message.method,
+                message.status_code,
+                message.cseq_number,
+                message.cseq_method,
+                message.via_branch,
+                message.source_ip,
+                message.destination_ip,
+            )
+            copies.setdefault(key, []).append(message.packet_time)
+
+        retransmitted = []
+        for key, times in copies.items():
+            times.sort()
+            resent = sum(
+                1
+                for previous, current in zip(times, times[1:])
+                if current - previous >= SIP_RETRANSMISSION_MIN_INTERVAL
+            )
+            if resent:
+                retransmitted.append((key, resent))
+        if not retransmitted:
+            continue
+
+        total = sum(resent for _key, resent in retransmitted)
+        invite_resends = max(
+            (resent for key, resent in retransmitted if key[0] and key[1] == "INVITE"),
+            default=0,
+        )
+        labels = [
+            f"{key[1] if key[0] else key[2]} (CSeq {key[3]} {key[4] or ''}".strip() + f"): {resent}x"
+            for key, resent in retransmitted[:5]
+        ]
+        first_key = retransmitted[0][0]
+        findings.append(
+            Finding(
+                type="sip_retransmission",
+                severity="high" if invite_resends >= 3 or total >= 5 else "medium",
+                confidence=0.90,
+                source_ip=first_key[6],
+                destination_ip=first_key[7],
+                description="Mensagens SIP foram retransmitidas sobre UDP, indicando perda ou atraso na sinalizacao.",
+                evidence=[
+                    *_flow_evidence(flow),
+                    f"Retransmissions: {total}",
+                    *labels,
+                ],
+                recommendation=(
+                    "Verifique perda de pacotes no caminho da sinalizacao, firewall ou ALG SIP descartando mensagens, "
+                    "e se o destino esta sobrecarregado e demorando a responder."
+                ),
+            )
+        )
+    return findings
+
+
+def detect_sip_slow_call_setup(flows, medium_seconds=SIP_PDD_MEDIUM_SECONDS, high_seconds=SIP_PDD_HIGH_SECONDS):
+    """Post-dial delay: time from the first INVITE to the first ringing response."""
+    findings = []
+    for flow in flows.values():
+        invite_time = next(
+            (message.packet_time for message in flow.messages if message.is_request and message.method == "INVITE"),
+            None,
+        )
+        if invite_time is None:
+            continue
+        ringing = next(
+            (
+                message
+                for message in flow.messages
+                if not message.is_request
+                and message.status_code in {180, 183}
+                and message.cseq_method in {None, "INVITE"}
+            ),
+            None,
+        )
+        if ringing is None:
+            continue
+        delay = ringing.packet_time - invite_time
+        if delay < medium_seconds:
+            continue
+        findings.append(
+            Finding(
+                type="sip_slow_call_setup",
+                severity="high" if delay >= high_seconds else "medium",
+                confidence=0.90,
+                source_ip=flow.source_ip,
+                destination_ip=flow.destination_ip,
+                description="O tempo entre o INVITE e o toque (post-dial delay) esta alto.",
+                evidence=[
+                    *_flow_evidence(flow),
+                    f"Post-dial delay: {delay:.2f} s",
+                    f"Ringing response: {ringing.status_code} {ringing.reason_phrase or ''}".strip(),
+                ],
+                recommendation=(
+                    "Verifique consultas DNS/ENUM lentas, rotas de saida com failover, autenticacao "
+                    "repetida e o tempo de processamento do proxy ou da operadora."
+                ),
+            )
+        )
+    return findings
+
+
+def detect_sip_sdp_private_address(flows):
+    """Private media address in SDP sent from a public signaling address: classic NAT breakage."""
+    findings = []
+    for flow in flows.values():
+        for message in flow.messages:
+            if not _is_public_ip(message.source_ip):
+                continue
+            private_media = [
+                media
+                for media in message.sdp_media
+                if media.media_type == "audio"
+                and media.port > 0
+                and media.connection_address
+                and _is_private_ip(media.connection_address)
+            ]
+            if not private_media:
+                continue
+            media = private_media[0]
+            findings.append(
+                Finding(
+                    type="sip_sdp_private_address",
+                    severity="medium",
+                    confidence=0.85,
+                    source_ip=message.source_ip,
+                    destination_ip=message.destination_ip,
+                    description="O SDP anuncia um endereco de midia privado, mas a sinalizacao veio de um IP publico.",
+                    evidence=[
+                        *_flow_evidence(flow),
+                        f"SDP audio endpoint: {media.connection_address}:{media.port}",
+                        f"Signaling source: {message.source_ip}",
+                        f"Message: {message.start_line}",
+                    ],
+                    recommendation=(
+                        "O endpoint esta atras de NAT sem reescrever o SDP. Habilite NAT traversal no SBC/PBX "
+                        "(media latching / symmetric RTP), configure o IP externo no endpoint ou desative ALG SIP defeituoso."
+                    ),
+                )
+            )
+            break
+    return findings
+
+
+def _ip_address(value):
+    try:
+        return ipaddress.ip_address(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_private_ip(value):
+    address = _ip_address(value)
+    if address is None:
+        return False
+    shared = address.version == 4 and address in _CGNAT_NETWORK
+    return (address.is_private or shared) and not address.is_loopback and not address.is_unspecified
+
+
+def _is_public_ip(value):
+    address = _ip_address(value)
+    return address is not None and address.is_global
+
+

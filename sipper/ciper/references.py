@@ -119,6 +119,12 @@ def references_for_finding_type(finding_type):
     if finding_type.startswith("ip_fragment"):
         return [IPV4_REFERENCE, IPV6_REFERENCE]
 
+    if finding_type.startswith("rtcp_"):
+        return [RTP_REFERENCE, VOIP_QOS_REFERENCE]
+
+    if finding_type in {"rtp_payload_not_negotiated", "rtp_ptime_mismatch", "rtp_source_mismatch"}:
+        return [RTP_REFERENCE, SDP_REFERENCE]
+
     if finding_type.startswith("rtp_"):
         references = [RTP_REFERENCE]
         if any(token in finding_type for token in ("loss", "jitter", "interruption", "out_of_order")):
@@ -129,6 +135,10 @@ def references_for_finding_type(finding_type):
         references = [SIP_REFERENCE]
         if any(token in finding_type for token in ("rtp", "audio", "media")):
             references.append(RTP_REFERENCE)
+        if finding_type in {"sip_retransmission", "sip_slow_call_setup"}:
+            references.append(SIP_TIMER_REFERENCE)
+        if finding_type == "sip_sdp_private_address":
+            references.append(SDP_REFERENCE)
         if any(token in finding_type for token in ("fragment", "mtu")):
             references.extend([IPV4_REFERENCE, IPV6_REFERENCE])
         return references

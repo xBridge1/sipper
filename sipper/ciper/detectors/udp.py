@@ -63,11 +63,9 @@ def detect_udp_no_response(flows):
                 confidence=confidence,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="UDP traffic was observed without a response.",
+                description="Trafego UDP foi observado sem resposta.",
                 recommendation=(
-                    "Check whether the destination service is available, "
-                    "whether UDP traffic is being blocked by a firewall, "
-                    "or whether the application is expected to respond."
+                    "Verifique se o servico de destino esta disponivel, se o UDP esta bloqueado por firewall ou se a aplicacao deveria responder."
                 ),
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",
@@ -102,11 +100,9 @@ def detect_udp_burst_no_response(flows):
                 confidence=0.90,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="Multiple UDP requests were sent in a short burst without any response.",
+                description="Varias requisicoes UDP foram enviadas em rajada curta sem nenhuma resposta.",
                 recommendation=(
-                    "Check whether the destination service is unavailable, "
-                    "rate-limited, or whether the traffic is being dropped "
-                    "before reaching the endpoint."
+                    "Verifique se o servico de destino esta indisponivel, com rate limit, ou se o trafego esta sendo descartado antes de chegar ao endpoint."
                 ),
                 evidence=[
                     f"Source: {flow.source_ip}:{flow.source_port}",

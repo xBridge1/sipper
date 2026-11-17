@@ -8,6 +8,7 @@ from pathlib import Path
 class AnalysisSettings:
     rtp_high_jitter_threshold: float = 0.04
     rtp_loss_high_threshold: int = 2
+    rtp_loss_high_percent: float = 1.0
     max_traffic_points: int = 720
     max_pcap_size_mb: int = 4096
     export_directory: str = str(Path.home())
@@ -66,6 +67,12 @@ def _validate_settings(values):
         1,
         100,
     )
+    loss_percent = _valid_float(
+        values.get("rtp_loss_high_percent"),
+        defaults.rtp_loss_high_percent,
+        0.01,
+        50.0,
+    )
     traffic_points = _valid_int(
         values.get("max_traffic_points"),
         defaults.max_traffic_points,
@@ -99,6 +106,7 @@ def _validate_settings(values):
     return AnalysisSettings(
         rtp_high_jitter_threshold=jitter,
         rtp_loss_high_threshold=loss,
+        rtp_loss_high_percent=loss_percent,
         max_traffic_points=traffic_points,
         max_pcap_size_mb=max_pcap_size,
         export_directory=export_directory,

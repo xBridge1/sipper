@@ -45,6 +45,9 @@ FINDING_TITLES = {
     "sip_signaling_fragmentation": "Sinalizacao SIP fragmentada",
     "sip_call_established_without_rtp": "Chamada sem audio (sem RTP)",
     "sip_call_one_way_audio": "Chamada com audio em uma via",
+    "sip_retransmission": "Retransmissao de sinalizacao SIP",
+    "sip_slow_call_setup": "Post-dial delay alto",
+    "sip_sdp_private_address": "IP privado no SDP (NAT)",
     # RTP
     "rtp_packet_loss": "Perda de pacotes RTP",
     "rtp_high_jitter": "Jitter alto no RTP",
@@ -56,6 +59,13 @@ FINDING_TITLES = {
     "rtp_one_way_audio": "Audio em uma via",
     "rtp_without_sip": "RTP sem sinalizacao SIP",
     "rtp_after_bye": "RTP apos BYE",
+    "rtp_payload_not_negotiated": "Codec RTP nao negociado no SDP",
+    "rtp_ptime_mismatch": "Ptime diferente do negociado",
+    "rtp_source_mismatch": "RTP de origem diferente do SDP",
+    # RTCP
+    "rtcp_reported_loss": "Perda reportada pelo RTCP",
+    "rtcp_reported_jitter": "Jitter reportado pelo RTCP",
+    "rtcp_high_rtt": "RTT alto (RTCP)",
     # TLS
     "tls_fatal_alert": "Alerta TLS fatal",
     "tls_client_hello_no_response": "TLS ClientHello sem resposta",
@@ -145,3 +155,139 @@ def state_label(state):
 def is_actionable(finding):
     """True when a viewmodel finding describes a problem worth acting on."""
     return finding.get("type") not in INFORMATIONAL_FINDINGS
+
+
+# Evidence lines keep stable English keys in the engine (they are parsed, e.g.
+# "Call-ID: ..."); only the displayed text is translated.
+EVIDENCE_LABELS = {
+    "200 OK responses": "Respostas 200 OK",
+    "ACK observed": "ACK observado",
+    "ACKs": "ACKs",
+    "Affected area": "Area afetada",
+    "Affected variables": "Variaveis afetadas",
+    "Alert direction": "Direcao do alerta",
+    "Asserted identity available": "Identidade assertada disponivel",
+    "Audio codecs": "Codecs de audio",
+    "Average RTT": "RTT medio",
+    "Average jitter (RFC 3550)": "Jitter medio (RFC 3550)",
+    "Cumulative lost": "Perda acumulada",
+    "Max RTT": "RTT maximo",
+    "Max fraction lost": "Maior fracao perdida",
+    "Message": "Mensagem",
+    "Negotiated payload types": "Payload types negociados",
+    "Observed ptime": "Ptime observado",
+    "Post-dial delay": "Post-dial delay",
+    "RTCP reports": "Relatorios RTCP",
+    "RTP source": "Origem do RTP",
+    "Reported by": "Reportado por",
+    "Reported jitter": "Jitter reportado",
+    "Ringing response": "Resposta de toque",
+    "SDP audio endpoints": "Endpoints de audio no SDP",
+    "SDP ptime": "Ptime no SDP",
+    "Signaling source": "Origem da sinalizacao",
+    "BYE method observed": "Metodo BYE observado",
+    "Burst duration": "Duracao da rajada",
+    "ClientHello messages": "Mensagens ClientHello",
+    "Content-Length mismatches": "Content-Length divergentes",
+    "Custom SIP headers": "Headers SIP personalizados",
+    "Destination port": "Porta de destino",
+    "Destination": "Destino",
+    "Direction": "Direcao",
+    "Duplicate fragments ignored": "Fragmentos duplicados ignorados",
+    "Duplicate packets": "Pacotes duplicados",
+    "Echo replies": "Echo replies",
+    "Echo requests": "Echo requests",
+    "Expected packets": "Pacotes esperados",
+    "Fatal alert": "Alerta fatal",
+    "Final fragment observed": "Fragmento final observado",
+    "Forward packets": "Pacotes no sentido direto",
+    "Fragmented SIP messages": "Mensagens SIP fragmentadas",
+    "Fragments observed": "Fragmentos observados",
+    "Handshake time": "Tempo de handshake",
+    "Header fragmentation risks": "Riscos de fragmentacao do header",
+    "Header threshold": "Limite de header",
+    "ICMP finding": "Finding ICMP",
+    "Identity header": "Header de identidade",
+    "Identity trust": "Confianca da identidade",
+    "Identity value": "Valor da identidade",
+    "Initial INVITE": "INVITE inicial",
+    "Initial fragment observed": "Fragmento inicial observado",
+    "Interruptions": "Interrupcoes",
+    "Longest gap": "Maior intervalo",
+    "Loss": "Perda",
+    "Lost packets": "Pacotes perdidos",
+    "Malformed records": "Registros malformados",
+    "Max jitter": "Jitter maximo",
+    "Max jitter (RFC 3550)": "Jitter maximo (RFC 3550)",
+    "Media after BYE": "Midia apos BYE",
+    "Messages with invalid headers": "Mensagens com headers invalidos",
+    "Messages with large headers": "Mensagens com headers grandes",
+    "Negotiated weak cipher": "Cifra fraca negociada",
+    "Out-of-order packets": "Pacotes fora de ordem",
+    "Oversized SIP/UDP messages": "Mensagens SIP/UDP grandes demais",
+    "Oversized header blocks": "Blocos de header grandes demais",
+    "Packet path": "Caminho do pacote",
+    "Packets in flow": "Pacotes no fluxo",
+    "Packets observed": "Pacotes observados",
+    "Packets sent": "Pacotes enviados",
+    "Parameter problem messages": "Mensagens parameter problem",
+    "Payload types": "Payload types",
+    "Peak transit variation": "Pico de variacao de transito",
+    "Provisional responses": "Respostas provisorias",
+    "RFC 4028 minimum": "Minimo da RFC 4028",
+    "RST observed during handshake": "RST observado no handshake",
+    "RST observed": "RST observado",
+    "RTP finding": "Finding RTP",
+    "RTP streams observed": "Streams RTP observados",
+    "RTP streams": "Streams RTP",
+    "Redirect messages": "Mensagens redirect",
+    "Related IP fragment sets": "Conjuntos de fragmentos IP relacionados",
+    "Response packets": "Pacotes de resposta",
+    "Response": "Resposta",
+    "Retransmissions": "Retransmissoes",
+    "Retransmission rate": "Taxa de retransmissao",
+    "Reverse packets": "Pacotes no sentido reverso",
+    "SDP audio endpoint": "Endpoint de audio no SDP",
+    "SDP direction": "Direcao no SDP",
+    "SIP INFO allowed": "SIP INFO permitido",
+    "SIP request recognized": "Requisicao SIP reconhecida",
+    "Safe message threshold": "Limite seguro de mensagem",
+    "Sequence": "Sequencia",
+    "ServerHello messages": "Mensagens ServerHello",
+    "Source port": "Porta de origem",
+    "Source": "Origem",
+    "TCP reset observed": "Reset TCP observado",
+    "TCP-segmented SIP messages": "Mensagens SIP segmentadas em TCP",
+    "Time Exceeded messages": "Mensagens time exceeded",
+    "Timestamp anomalies": "Anomalias de timestamp",
+    "UDP finding": "Finding UDP",
+    "Unacknowledged CSeq": "CSeq sem ACK",
+    "Unique packets": "Pacotes unicos",
+    "Unreachable messages": "Mensagens unreachable",
+    "Versions": "Versoes",
+    "Weak cipher suites": "Cipher suites fracas",
+}
+
+EVIDENCE_VALUES = {
+    "yes": "sim",
+    "no": "nao",
+    "none": "nenhum",
+}
+
+
+def evidence_label(item):
+    """Portuguese display text for an engine evidence line."""
+    text = str(item)
+    key, separator, value = text.partition(": ")
+    if not separator:
+        return text
+    label = EVIDENCE_LABELS.get(key)
+    if label is None:
+        return text
+    value = EVIDENCE_VALUES.get(value.strip(), value)
+    value = value.replace(" seconds", " segundos").replace(" bytes", " bytes")
+    return f"{label}: {value}"
+
+
+def evidence_labels(items):
+    return [evidence_label(item) for item in items]

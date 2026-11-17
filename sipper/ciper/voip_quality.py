@@ -6,12 +6,47 @@ JITTER_HIGH_QUALITY_MS = 30.0
 JITTER_SEVERE_MS = 100.0
 
 
-def estimate_mos(loss_percent, jitter_seconds, codec=None):
-    jitter_ms = max(0.0, jitter_seconds * 1000)
-    codec_penalty = 7.0 if codec in {"G729", "G723"} else 0.0
-    loss_penalty = min(70.0, max(0.0, loss_percent) * 2.5)
-    jitter_penalty = min(35.0, max(0.0, jitter_ms - 20.0) * 0.35)
-    rating = max(0.0, min(100.0, 93.2 - codec_penalty - loss_penalty - jitter_penalty))
+# ITU-T G.113 Appendix I: equipment impairment (Ie) and packet-loss
+# robustness (Bpl) per codec, assuming the codec's usual concealment.
+CODEC_IMPAIRMENTS = {
+    "PCMU": (0.0, 25.1),
+    "PCMA": (0.0, 25.1),
+    "G722": (0.0, 25.1),
+    "G729": (11.0, 19.0),
+    "G723": (15.0, 16.1),
+    "GSM": (20.0, 10.0),
+    "ILBC": (10.0, 32.0),
+    "OPUS": (0.0, 30.0),
+    "AMR": (5.0, 10.0),
+    "AMR-WB": (0.0, 15.0),
+}
+DEFAULT_CODEC_IMPAIRMENT = (0.0, 25.1)
+# Mouth-to-ear delay not visible in the capture: codec framing, look-ahead
+# and playout (jitter buffer sized at roughly twice the jitter).
+CODEC_PROCESSING_DELAY_MS = 30.0
+
+
+def estimate_mos(loss_percent, jitter_seconds, codec=None, rtt_seconds=None, burst_ratio=1.0):
+    """Estimate MOS-CQE with a simplified ITU-T G.107 E-model.
+
+    R = 93.2 - Id - Ie,eff, where Ie,eff grows with loss according to the codec's
+    robustness and Id comes from the estimated one-way delay. Without RTCP
+    the network delay is unknown and only jitter buffering is counted.
+    """
+    loss_percent = max(0.0, float(loss_percent or 0.0))
+    jitter_ms = max(0.0, float(jitter_seconds or 0.0) * 1000)
+    ie, bpl = CODEC_IMPAIRMENTS.get(str(codec or "").upper(), DEFAULT_CODEC_IMPAIRMENT)
+    burst_ratio = max(1.0, float(burst_ratio or 1.0))
+    ie_effective = ie + (95.0 - ie) * loss_percent / (loss_percent / burst_ratio + bpl)
+
+    one_way_delay = CODEC_PROCESSING_DELAY_MS + 2 * jitter_ms
+    if rtt_seconds:
+        one_way_delay += max(0.0, rtt_seconds) * 1000 / 2
+    delay_impairment = 0.024 * one_way_delay
+    if one_way_delay > 177.3:
+        delay_impairment += 0.11 * (one_way_delay - 177.3)
+
+    rating = max(0.0, min(100.0, 93.2 - delay_impairment - ie_effective))
     mos = 1.0 + 0.035 * rating + rating * (rating - 60.0) * (100.0 - rating) * 0.000007
     return round(max(1.0, min(4.5, mos)), 2)
 
@@ -26,7 +61,7 @@ def mos_observation(mos):
     else:
         state = "ruim"
 
-    return f"MOS estimado: {mos:.2f} ({state}). Estimativa baseada em perda e variacao RTP; atraso fim a fim nao foi medido."
+    return f"MOS estimado: {mos:.2f} ({state}). Estimativa E-model (ITU-T G.107) com perda, jitter, codec e RTT do RTCP quando disponivel."
 
 
 def packet_loss_observation(loss_percent):

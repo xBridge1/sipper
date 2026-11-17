@@ -41,6 +41,7 @@ def _rtp_packet(
     destination="10.0.0.2",
     source_port=4000,
     destination_port=4002,
+    timestamp=160,
 ):
     header = bytes(
         [
@@ -48,10 +49,10 @@ def _rtp_packet(
             (marker << 7) | payload_type,
             (sequence >> 8) & 0xFF,
             sequence & 0xFF,
-            0,
-            0,
-            0,
-            160,
+            (timestamp >> 24) & 0xFF,
+            (timestamp >> 16) & 0xFF,
+            (timestamp >> 8) & 0xFF,
+            timestamp & 0xFF,
             0,
             0,
             4,
@@ -213,12 +214,13 @@ def test_rtp_marker_payload_type_is_not_mistaken_for_rtcp():
 
 
 def test_each_orphan_rtp_stream_is_reported_without_sip():
-    first = _rtp_packet(sequence=100)
-    second = _rtp_packet(sequence=200)
-    second[UDP].sport = 5000
-    second[UDP].dport = 5002
+    first = [_rtp_packet(sequence=100 + index, timestamp=160 * (index + 1)) for index in range(12)]
+    second = [
+        _rtp_packet(sequence=200 + index, timestamp=160 * (index + 1), source_port=5000, destination_port=5002)
+        for index in range(12)
+    ]
 
-    result = analyze_pcap([first, second])
+    result = analyze_pcap([*first, *second])
 
     assert sum(finding.type == "rtp_without_sip" for finding in result["findings"]) == 2
 
@@ -230,8 +232,8 @@ def test_unrelated_sip_flow_does_not_hide_orphan_rtp_stream():
         / _sip_invite("unrelated-sip")
     )
     rtp_packets = [
-        _rtp_packet(source="10.0.0.1", destination="10.0.0.2", sequence=100),
-        _rtp_packet(source="10.0.0.1", destination="10.0.0.2", sequence=101),
+        _rtp_packet(source="10.0.0.1", destination="10.0.0.2", sequence=100 + index, timestamp=160 * (index + 1))
+        for index in range(12)
     ]
 
     result = analyze_pcap([sip, *rtp_packets])
@@ -253,8 +255,9 @@ def test_opposite_rtp_on_another_port_pair_does_not_hide_one_way_audio():
                 source_port=4000,
                 destination_port=4002,
                 sequence=sequence,
+                timestamp=160 * (sequence - 99),
             )
-            for sequence in (100, 101, 102)
+            for sequence in range(100, 112)
         ],
         *[
             _rtp_packet(
@@ -263,8 +266,9 @@ def test_opposite_rtp_on_another_port_pair_does_not_hide_one_way_audio():
                 source_port=5002,
                 destination_port=5000,
                 sequence=sequence,
+                timestamp=160 * (sequence - 199),
             )
-            for sequence in (200, 201, 202)
+            for sequence in range(200, 212)
         ],
     ]
 
