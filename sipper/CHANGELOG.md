@@ -2,6 +2,44 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [1.4.0] - 2026-11-25
+
+### Added
+
+- Veredito com **provavel culpado**: cada chamada e a captura inteira recebem status (Falha, Degradada, Risco, Resultado normal, OK), manchete objetiva, host/papel responsavel, nivel de confianca, raciocinio passo a passo e proximos passos. A causa raiz e separada dos sintomas (ex.: header rejeitado com 400 explica a chamada recusada).
+- Base de conhecimento de codigos SIP (`ciper/sip_status.py`): significado, lado culpado (origem, destino, negociacao, proximo salto ou resultado normal), acao recomendada e hangup cause equivalente do FreeSWITCH.
+- Detector de higiene de mensagens SIP (`ciper/detectors/sip_headers.py`) com a linha exata do problema e confirmacao quando o destino responde 400/415/420/483/488: caracteres de controle, bytes nao UTF-8 (Latin-1) em From/identidade, headers singleton duplicados, headers obrigatorios ausentes, Contact ausente, CSeq divergente, Max-Forwards esgotado, sintaxe `${...}` (expansao de variaveis do FreeSWITCH), From/To/Contact malformados, Request-URI invalida (espaco, `#` sem escape), `Require` nao suportado pelo FreeSWITCH, Content-Encoding, corpo sem Content-Type, SIP/TCP sem Content-Length, quebras LF sem CR, folding, nomes de header invalidos, From sem tag, versao SIP invalida, SDP incompleto, payload dinamico sem rtpmap e oferta SRTP/DTLS.
+- Interface: cartao de veredito no topo da Visao geral e do Diagnostico (raciocinio recolhivel), coluna "Provavel culpado" e marcacao "Causa raiz" na fila de incidentes, detalhe do incidente com a linha do header problematico e veredito no detalhe da chamada.
+- Relatorios JSON, CSV e PDF com o veredito, o provavel culpado e a confianca.
+- Causa Q.850 do header `Reason` usada para refinar o culpado das recusas e novo finding `sip_abnormal_hangup` para BYE com causa anormal; o resumo da chamada mostra quem desligou.
+- Ponto de captura configuravel ou detectado automaticamente, refinando o culpado de INVITE sem resposta, 200 OK sem ACK, audio em uma via e degradacao de midia.
+- Correlacao das pernas A/B do FreeSWITCH (B2BUA): a falha da perna B e propagada para o veredito da perna A e a chamada e contada uma vez.
+- Audio mudo (`rtp_silent_audio`): RTP G.711 com silencio digital.
+- Digitos DTMF (RFC 4733 e SIP INFO) no resumo da chamada.
+- Comparacao oferta x resposta SDP: codec nao ofertado, sem codec comum, DTMF removido ou com payload diferente, direcao invalida e linhas `m=` divergentes.
+- `Contact` com IP privado (NAT), REGISTER com credenciais recusadas, registro longo demais atras de NAT e aviso de SIP sobre TLS.
+- Perfil FreeSWITCH com codecs aceitos, `enable-100rel`, `enable-timer` e SRTP para prever `488`/`420`; listas de headers `X-` ignorados e peers confiaveis.
+- SIP Flow abre na mensagem culpada, destacada no ladder e no texto bruto; botoes para copiar o resumo da captura ou da chamada; filtro de causas raiz.
+- Linha de comando reescrita: varios arquivos, `--json`, `--ticket`, `--freeswitch`, `--capture-point` e `--fail-on` para automacao.
+- Corpus de regressao de vereditos (`tests/corpus/`) com gravador para capturas reais, e fuzzing dos parsers com Hypothesis.
+
+### Changed
+
+- Respostas 480/486/487/600/603 passam a ser tratadas como resultado normal da chamada (severidade baixa), nao como falha tecnica.
+- O titulo de recusas SIP mostra o codigo e o significado (ex.: "Recusa SIP 488 (Midia nao aceitavel)").
+- `ciper/gui/app.py` dividido em modulos (renderizacao, tabelas, configuracoes, diagnostico).
+- INVITE sem resposta em captura mais curta que o Timer B (32 s) recebe severidade e confianca menores.
+- Audio em uma via aponta o sentido sem RTP; perda e jitter apontam o sentido do caminho degradado; ICMP aponta quem emitiu o erro (porta fechada, roteador, firewall).
+
+### Fixed
+
+- Mensagens SIP com bytes nao UTF-8 eram descartadas silenciosamente e nao apareciam na analise.
+- Requisicoes com espaco na Request-URI eram descartadas silenciosamente.
+- Headers repetidos (Via, Record-Route, duplicatas) perdiam todas as copias exceto a ultima; o branch passa a vir do Via do topo.
+- Um byte Latin-1 em campos numericos (CSeq, Content-Length, portas do SDP) derrubava o parser SIP (encontrado pelo fuzzing).
+- Requisicoes enviadas pelo lado chamado (ex.: BYE do destino) eram desenhadas na direcao errada no SIP Flow.
+- Checkbox desmarcado era invisivel no tema escuro.
+
 ## [1.3.0] - 2026-11-16
 
 ### Added

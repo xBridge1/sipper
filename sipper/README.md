@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
 [![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-244%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-304%20passing-brightgreen)
 
 ![SIPPER](logo/splash.png)
 
@@ -13,12 +13,12 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 ## Download
 
-Versao atual: **SIPPER 1.3.0**.
+Versao atual: **SIPPER 1.4.0**.
 
-- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.3.0/SIPPER-Setup-1.3.0.exe)
-- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.3.0/SIPPER-portable-1.3.0.zip)
-- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.3.0/SIPPER-Setup-1.3.0.exe.sha256)
-- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.3.0)
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-Setup-1.4.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-portable-1.4.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-Setup-1.4.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.4.0)
 
 ## Destaques
 
@@ -52,6 +52,39 @@ Versao atual: **SIPPER 1.3.0**.
 - Identificacao de sinalizacao fragmentada e cabecalhos SIP excessivamente grandes.
 - Retransmissoes SIP sobre UDP, post-dial delay alto e IP privado no SDP (NAT).
 - Leitura de SDP para enderecos de midia, codecs, RTCP, `rtcp-mux` e `mid`.
+
+### Veredito e provavel culpado
+
+- Cada chamada e a captura recebem um veredito: o que aconteceu, o **provavel culpado** (IP e papel: chamador, destino, FreeSWITCH, rede em um sentido), a confianca e o raciocinio.
+- Causa raiz separada de sintomas: um header rejeitado com `400` explica a chamada recusada; um SDP com IP privado explica o audio em uma via.
+- Codigos SIP interpretados (origem, destino, negociacao, proximo salto ou resultado normal como ocupado), com a hangup cause equivalente do FreeSWITCH.
+- Causa Q.850 do header `Reason` (ex.: `503` com cause 17 = ocupado) e quedas com causa anormal no BYE, indicando quem derrubou a chamada.
+- **Ponto de captura** configuravel ou detectado: "o INVITE chegou ao FreeSWITCH e ele nao respondeu" e diferente de "o INVITE saiu e nao voltou nada".
+- **Pernas A/B do FreeSWITCH** correlacionadas: a recusa da perna A aponta para a falha real da perna B (ramal, gateway, operadora).
+- INVITE sem resposta so e chamado de timeout depois dos 32 s do Timer B; capturas curtas recebem confianca menor.
+
+### Midia, negociacao e NAT
+
+- **Audio mudo**: RTP G.711 fluindo com silencio digital, a reclamacao "nao ouco nada" que perda e jitter nao explicam.
+- Digitos DTMF enviados por RFC 4733 e SIP INFO exibidos na chamada.
+- Oferta x resposta SDP: codec nao ofertado, nenhum codec de voz em comum, `telephone-event` removido ou com payload diferente, direcao invalida e numero de linhas `m=` divergente.
+- `Contact` com IP privado vindo de IP publico (a causa classica do ACK/BYE perdido e da queda em ~32 s).
+- REGISTER com senha recusada e intervalo de registro longo demais atras de NAT.
+- Sinalizacao SIP sobre TLS (5061) avisada como nao analisavel.
+- Perfil FreeSWITCH com codecs aceitos, `enable-100rel`, `enable-timer` e SRTP: o SIPPER preve o `488`/`420` antes de acontecer. Headers `X-` conhecidos e peers confiaveis podem ser silenciados.
+
+### Interface
+
+- Veredito no topo da Visao geral e do Diagnostico, com botao **Copiar resumo para chamado** (texto pronto para ticket ou e-mail para a operadora).
+- **SIP Flow** abre ja na mensagem culpada, marcada no ladder, com as linhas problematicas destacadas no texto bruto.
+- Filtro "Mostrar so causas raiz", detalhe da chamada com quem desligou, causa Q.850, pernas relacionadas e DTMF.
+
+### Headers SIP que quebram o FreeSWITCH
+
+- Bytes nao UTF-8 (Latin-1) em From/identidade, caracteres de controle, headers singleton duplicados, headers obrigatorios ou Contact ausentes, CSeq divergente e Max-Forwards esgotado.
+- Sintaxe `${...}` em headers (expansao de variaveis do FreeSWITCH), From/To/Contact com aspas ou `<>` desbalanceados, Request-URI com espaco ou `#` sem escape.
+- `Require` com extensoes nao suportadas, Content-Encoding, corpo sem Content-Type, SIP/TCP sem Content-Length, LF sem CR, folding, SDP incompleto e payload dinamico sem `rtpmap`.
+- A linha exata do header e exibida, e o finding e marcado como confirmado quando o destino responde `400`, `415`, `420`, `483` ou `488`.
 
 ### Compatibilidade FreeSWITCH
 
@@ -123,10 +156,13 @@ Tambem e possivel abrir uma captura direto pela linha de comando: `python -m cip
 ### Linha de comando
 
 ```powershell
-python -m ciper.main captura.pcap
+python -m ciper.main captura.pcap                                  # veredito e chamadas com problema
+python -m ciper.main *.pcap --freeswitch 10.0.0.20 --json out.json  # lote com resultado em JSON
+python -m ciper.main captura.pcap --ticket                          # resumo para chamado
+python -m ciper.main captura.pcap --json - --fail-on fail           # para scripts/CI (codigo 2 se falhar)
 ```
 
-O modo de linha de comando permanece disponivel para uma consulta textual dos fluxos e findings. A interface grafica e a experiencia principal do produto.
+A interface grafica continua sendo a experiencia principal; a linha de comando serve para lotes, automacao e CI.
 
 ## Testes
 
@@ -136,7 +172,7 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-A suite possui **221 testes automatizados**. Eles cobrem deteccoes TCP, UDP, ICMP, SIP, RTP, TLS, fragmentacao e FreeSWITCH, alem de correlacoes do engine, relatorios, configuracoes, atualizador, cancelamento, leitura de pcap/pcapng e o fluxo principal da interface. O corpus sintetico reproduzivel esta em `tests/pcaps/`.
+A suite possui **304 testes automatizados**, incluindo um corpus de regressao de vereditos (`tests/corpus/`, com instrucoes para adicionar capturas reais) e fuzzing dos parsers com Hypothesis.
 
 Para medir desempenho, gere uma captura sintetica grande e analise-a:
 
@@ -153,10 +189,10 @@ O projeto inclui uma cadeia de distribuicao para Windows com PyInstaller e Inno 
 2. Ative o ambiente virtual e execute:
 
 ```powershell
-.\packaging\build.ps1 -Version 1.3.0
+.\packaging\build.ps1 -Version 1.4.0
 ```
 
-O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.3.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.3.0.exe.sha256`.
+O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.4.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.4.0.exe.sha256`.
 
 Para montar apenas o executavel, sem exigir o Inno Setup:
 
@@ -169,8 +205,8 @@ Para montar apenas o executavel, sem exigir o Inno Setup:
 Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow na raiz do repositorio (`.github/workflows/release-windows.yml`) executa os testes e publica o instalador `SIPPER-Setup-<versao>.exe`, seu checksum `.exe.sha256` e o pacote portatil `.zip`.
 
 ```powershell
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.4.0
+git push origin v1.4.0
 ```
 
 O acompanhamento fica na aba **Actions** do repositorio. Quando o workflow terminar, os arquivos estarao na aba **Releases**.
@@ -191,6 +227,11 @@ ciper/
   pcap_reader.py   Leitor nativo de pcap e pcapng
   labels.py        Nomes em portugues de findings, severidades e estados
   engine.py        Orquestracao, correlacao e sumarios de chamadas
+  diagnosis.py     Veredito, causa raiz e provavel culpado
+  legs.py          Correlacao das pernas A/B de um B2BUA
+  sip_status.py    Significado e culpado de cada codigo SIP
+  q850.py          Causas Q.850 do header Reason
+  ticket.py        Resumo em texto para chamados
   sip.py            Parser e fluxos SIP/SDP
   rtp.py            Parser e streams RTP
   reporting.py      Exportacao JSON, CSV e PDF
