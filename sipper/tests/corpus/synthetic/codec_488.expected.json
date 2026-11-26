@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "target_platform": "freeswitch",
+    "target_platform_ips": "10.0.0.20",
+    "freeswitch_codecs": "G722"
+  },
+  "diagnosis": {
+    "status": "fail",
+    "root_type": "freeswitch_codec_mismatch",
+    "culprit_ip": "198.51.100.10"
+  },
+  "calls": {
+    "codec": {
+      "status": "fail",
+      "root_type": "freeswitch_codec_mismatch",
+      "culprit_ip": "198.51.100.10"
+    }
+  },
+  "present_findings": [
+    "freeswitch_codec_mismatch",
+    "sip_error_response"
+  ]
+}

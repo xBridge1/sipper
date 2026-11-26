@@ -1,0 +1,19 @@
+{
+  "pcap": "../../../samples/teste_icmp.pcap",
+  "settings": {},
+  "diagnosis": {
+    "status": "fail",
+    "root_type": "icmp_host_unreachable",
+    "culprit_ip": "192.168.1.254"
+  },
+  "calls": {},
+  "present_findings": [
+    "icmp_destination_unreachable",
+    "icmp_fragmentation_needed",
+    "icmp_host_unreachable",
+    "icmp_no_response",
+    "icmp_redirect",
+    "icmp_time_exceeded",
+    "ip_fragmentation"
+  ]
+}

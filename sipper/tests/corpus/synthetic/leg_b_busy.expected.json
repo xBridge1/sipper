@@ -1,0 +1,26 @@
+{
+  "settings": {
+    "target_platform": "freeswitch",
+    "target_platform_ips": "10.0.0.20"
+  },
+  "diagnosis": {
+    "status": "user",
+    "root_type": "sip_error_response",
+    "culprit_ip": "10.0.0.30"
+  },
+  "calls": {
+    "leg-b": {
+      "status": "user",
+      "root_type": "sip_error_response",
+      "culprit_ip": "10.0.0.30"
+    },
+    "leg-a": {
+      "status": "user",
+      "root_type": "sip_error_response",
+      "culprit_ip": "10.0.0.30"
+    }
+  },
+  "present_findings": [
+    "sip_error_response"
+  ]
+}

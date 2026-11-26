@@ -1,6 +1,9 @@
 import ipaddress
 
+from ciper.detectors.sip_headers import header_display_name
 from ciper.findings import Finding
+from ciper.q850 import message_q850
+from ciper.sip_status import sip_status_info
 from ciper.sip import (
     SIP_FRAGMENTATION_RISK_HEADER_BYTES,
     SIP_LARGE_HEADER_LINE_BYTES,
@@ -12,7 +15,11 @@ from ciper.sip import (
 )
 
 
-def detect_sip_invite_no_response(flows):
+# RFC 3261 Timer B: a client gives up on an INVITE after 64*T1 = 32 s.
+SIP_TIMER_B_SECONDS = 32.0
+
+
+def detect_sip_invite_no_response(flows, capture_end=None):
     findings = []
 
     for flow in flows.values():
@@ -23,21 +30,48 @@ def detect_sip_invite_no_response(flows):
         if invite_responses:
             continue
 
+        invites = [message for message in flow.messages if message.is_request and message.method == "INVITE"]
+        first_invite = invites[0]
+        copies = len(invites)
+        waited = (capture_end - first_invite.packet_time) if capture_end is not None else None
+        # Over UDP the client resends at 0.5, 1, 2, 4... s: four or more copies
+        # prove at least ~7 s of silence even in a short capture.
+        truncated = (
+            waited is not None
+            and waited < SIP_TIMER_B_SECONDS
+            and not (first_invite.transport == "UDP" and copies >= 4)
+        )
+        evidence = [
+            *_flow_evidence(flow),
+            f"Source: {flow.source_ip}",
+            f"Destination: {flow.destination_ip}",
+            f"INVITEs: {flow.invites}",
+            f"INVITE copies sent: {copies}",
+            "INVITE responses: 0",
+        ]
+        if waited is not None:
+            evidence.append(f"Capture after INVITE: {waited:.1f} s")
+        if truncated:
+            description = (
+                f"INVITE SIP sem resposta, mas a captura terminou {waited:.1f} s depois dele, antes do timeout "
+                "de 32 s (Timer B). Pode ser apenas o fim da captura: confirme com uma captura mais longa."
+            )
+            severity, confidence = "medium", 0.55
+        else:
+            description = "INVITE SIP foi observado sem nenhuma resposta SIP."
+            if copies > 1:
+                description += f" O chamador retransmitiu o INVITE {copies - 1} vez(es) sem retorno."
+            severity, confidence = "high", 0.95
+
         findings.append(
             Finding(
                 type="sip_invite_no_response",
-                severity="high",
-                confidence=0.95,
+                severity=severity,
+                confidence=confidence,
                 source_ip=flow.source_ip,
                 destination_ip=flow.destination_ip,
-                description="INVITE SIP foi observado sem nenhuma resposta SIP.",
-                evidence=[
-                    *_flow_evidence(flow),
-                    f"Source: {flow.source_ip}",
-                    f"Destination: {flow.destination_ip}",
-                    f"INVITEs: {flow.invites}",
-                    "INVITE responses: 0",
-                ],
+                description=description,
+                evidence=evidence,
                 recommendation=(
                     "Verifique se o servidor SIP ou peer e alcancavel, se a sinalizacao esta bloqueada ou se o destino nao esta processando a chamada."
                 ),
@@ -60,24 +94,80 @@ def detect_sip_error_responses(flows):
             continue
 
         first_error = error_messages[0]
+        status = f"{first_error.status_code} {first_error.reason_phrase or ''}".strip()
+        info = sip_status_info(first_error.status_code)
+        invite = next(
+            (
+                message
+                for message in flow.messages
+                if message.is_request and message.method == "INVITE"
+                and (first_error.cseq_number is None or message.cseq_number == first_error.cseq_number)
+            ),
+            None,
+        )
+        # The response travels back to the requester: its source is the side
+        # that refused the call.
+        responder_ip = first_error.source_ip
+        requester_ip = first_error.destination_ip
+        if info is None:
+            severity = "high"
+            culprit = responder_ip
+            description = f"O estabelecimento da chamada SIP recebeu a resposta de erro {status}."
+            recommendation = (
+                "Verifique roteamento SIP, autenticacao, dial plan ou disponibilidade do destino conforme o codigo de status retornado."
+            )
+            blame = "responder"
+        else:
+            blame = info.blame
+            severity = "low" if blame == "user" else "high"
+            culprit = requester_ip if blame == "requester" else responder_ip
+            description = (
+                f"A chamada foi recusada por {responder_ip} com {status} ({info.meaning}). {info.explanation}"
+            )
+            recommendation = info.action
+        cause, cause_text = message_q850(first_error)
+        if cause is not None:
+            # The Q.850 cause is more specific than the SIP class: a 503 with
+            # cause 17 is a busy user, a 480 with cause 18 a silent terminal.
+            blame = cause.blame
+            severity = "low" if blame == "user" else "high"
+            culprit = requester_ip if blame == "requester" else responder_ip
+            description += f" Causa Q.850 {cause.cause}: {cause.meaning}."
+        evidence = [
+            *_flow_evidence(flow),
+            f"Status: {status}",
+            f"Rejected by: {responder_ip}",
+            f"Requested by: {requester_ip}",
+            f"INVITEs: {flow.invites}",
+            f"INVITE error responses: {len(error_messages)}",
+        ]
+        if info is not None:
+            evidence.append(f"Meaning: {info.meaning}")
+            if info.freeswitch and cause is None:
+                evidence.append(f"FreeSWITCH hangup cause: {info.freeswitch}")
+        if cause is not None:
+            evidence.append(f"Q.850 cause: {cause.cause} - {cause.meaning}" + (f" ({cause_text})" if cause_text else ""))
+            if cause.freeswitch:
+                evidence.append(f"FreeSWITCH hangup cause: {cause.freeswitch}")
+        evidence.append(f"Blame: {blame}")
+        for header in ("reason", "warning", "unsupported", "x-reason"):
+            value = first_error.headers.get(header)
+            if value:
+                evidence.append(f"Response {header_display_name(header)}: {value[:200]}")
+        if invite is not None and invite.request_uri:
+            evidence.append(f"Request-URI: {invite.request_uri}")
 
         findings.append(
             Finding(
                 type="sip_error_response",
-                severity="high",
+                severity=severity,
                 confidence=0.95,
                 source_ip=first_error.source_ip,
                 destination_ip=first_error.destination_ip,
-                description="O estabelecimento da chamada SIP recebeu uma resposta de erro.",
-                evidence=[
-                    *_flow_evidence(flow),
-                    f"Status: {first_error.status_code} {first_error.reason_phrase}",
-                    f"INVITEs: {flow.invites}",
-                    f"INVITE error responses: {len(error_messages)}",
-                ],
-                recommendation=(
-                    "Verifique roteamento SIP, autenticacao, dial plan ou disponibilidade do destino conforme o codigo de status retornado."
-                ),
+                description=description,
+                evidence=evidence,
+                recommendation=recommendation,
+                culprit_ip=culprit,
             )
         )
 
@@ -158,6 +248,65 @@ def detect_sip_call_established(flows):
             )
         )
 
+    return findings
+
+
+NORMAL_HANGUP_CAUSES = {16, 17, 19, 21, 31}
+
+
+def detect_sip_abnormal_hangup(flows):
+    """A BYE carrying a non-normal Q.850 cause: the call dropped, nobody hung up."""
+    findings = []
+    for flow in flows.values():
+        bye = next(
+            (message for message in flow.messages if message.is_request and message.method == "BYE"),
+            None,
+        )
+        if bye is None:
+            continue
+        cause, text = message_q850(bye)
+        if cause is None or cause.cause in NORMAL_HANGUP_CAUSES:
+            continue
+        answered = next(
+            (
+                message.packet_time
+                for message in flow.messages
+                if not message.is_request and message.status_code and 200 <= message.status_code < 300
+                and message.cseq_method in {None, "INVITE"}
+            ),
+            None,
+        )
+        evidence = [
+            *_flow_evidence(flow),
+            f"Hangup by: {bye.source_ip}",
+            f"Q.850 cause: {cause.cause} - {cause.meaning}" + (f" ({text})" if text else ""),
+            f"Blame: {cause.blame}",
+        ]
+        if cause.freeswitch:
+            evidence.append(f"FreeSWITCH hangup cause: {cause.freeswitch}")
+        if answered is not None:
+            evidence.append(f"Call duration before BYE: {bye.packet_time - answered:.1f} s")
+        findings.append(
+            Finding(
+                type="sip_abnormal_hangup",
+                severity="high" if cause.blame in {"downstream", "responder"} else "medium",
+                confidence=0.90,
+                source_ip=bye.source_ip,
+                destination_ip=bye.destination_ip,
+                description=(
+                    f"A chamada foi encerrada por {bye.source_ip} com causa anormal Q.850 {cause.cause} "
+                    f"({cause.meaning}). Ninguem desligou normalmente: o lado que enviou o BYE derrubou a chamada "
+                    "por falha propria ou da rede atras dele."
+                ),
+                evidence=evidence,
+                recommendation=(
+                    f"Verifique os logs de {bye.source_ip} no horario do BYE. No FreeSWITCH, procure o hangup cause "
+                    f"{cause.freeswitch or cause.cause} no CDR/fs_cli; causas como 102 e 38 indicam timeout ou rede, "
+                    "e quedas logo apos ~30 s costumam ser ACK/re-INVITE perdidos por NAT."
+                ),
+                culprit_ip=bye.source_ip,
+            )
+        )
     return findings
 
 

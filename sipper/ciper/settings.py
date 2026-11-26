@@ -14,6 +14,13 @@ class AnalysisSettings:
     export_directory: str = str(Path.home())
     target_platform: str = "generic"
     target_platform_ips: str = ""
+    capture_point_ip: str = ""
+    freeswitch_codecs: str = ""
+    freeswitch_100rel: bool = False
+    freeswitch_session_timer: bool = True
+    freeswitch_srtp: bool = False
+    ignored_custom_headers: str = ""
+    trusted_peer_ips: str = ""
     theme: str = "dark"
     recent_files: list[str] = field(default_factory=list)
 
@@ -95,6 +102,15 @@ def _validate_settings(values):
     if not isinstance(target_platform_ips, str):
         target_platform_ips = defaults.target_platform_ips
 
+    text_fields = {}
+    for name in ("capture_point_ip", "freeswitch_codecs", "ignored_custom_headers", "trusted_peer_ips"):
+        value = values.get(name)
+        text_fields[name] = value.strip() if isinstance(value, str) else getattr(defaults, name)
+    bool_fields = {}
+    for name in ("freeswitch_100rel", "freeswitch_session_timer", "freeswitch_srtp"):
+        value = values.get(name)
+        bool_fields[name] = value if isinstance(value, bool) else getattr(defaults, name)
+
     theme = values.get("theme")
     if theme not in {"dark", "light"}:
         theme = defaults.theme
@@ -112,6 +128,8 @@ def _validate_settings(values):
         export_directory=export_directory,
         target_platform=target_platform,
         target_platform_ips=target_platform_ips,
+        **text_fields,
+        **bool_fields,
         theme=theme,
         recent_files=recent_files,
     )

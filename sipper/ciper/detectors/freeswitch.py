@@ -1,11 +1,15 @@
+from ciper.text import is_ascii_digits
 from ipaddress import ip_address, ip_network
 
 from ciper.findings import Finding
 
 
-def detect_freeswitch_compatibility(flows, target_ips=""):
+def detect_freeswitch_compatibility(flows, target_ips="", ignored_headers="", trusted_peers=""):
+    """``ignored_headers``: custom headers the operator already knows about.
+    ``trusted_peers``: IPs/networks whose identity and custom headers are trusted."""
     findings = []
     seen_invites = set()
+    ignored = {name.strip().lower() for name in (ignored_headers or "").replace(";", ",").split(",") if name.strip()}
 
     for flow in flows.values():
         invite = _get_initial_invite(flow)
@@ -22,6 +26,7 @@ def detect_freeswitch_compatibility(flows, target_ips=""):
             continue
         seen_invites.add(invite_key)
 
+        trusted = bool(trusted_peers) and _matches_target(invite.source_ip, trusted_peers)
         headers = invite.headers
         from_header = headers.get("from", "")
         identity_header, identity_value, identity_asserted = _identity_header(headers)
@@ -47,7 +52,7 @@ def detect_freeswitch_compatibility(flows, target_ips=""):
         else:
             if risky_media:
                 findings.append(_media_offer_risk(flow, invite, risky_media))
-            if anonymous:
+            if anonymous and not trusted:
                 findings.append(
                     _anonymous_identity_risk(
                         flow,
@@ -68,8 +73,8 @@ def detect_freeswitch_compatibility(flows, target_ips=""):
             if finding is not None:
                 findings.append(finding)
 
-        custom_headers = sorted(name for name in headers if name.startswith("x-"))
-        if custom_headers:
+        custom_headers = sorted(name for name in headers if name.startswith("x-") and name not in ignored)
+        if custom_headers and not trusted:
             findings.append(_custom_header_input(flow, invite, custom_headers))
 
     return findings
@@ -159,7 +164,7 @@ def _parse_timer_seconds(value):
     if not value:
         return None
     seconds = value.split(";", 1)[0].strip()
-    return int(seconds) if seconds.isdigit() else None
+    return int(seconds) if is_ascii_digits(seconds) else None
 
 
 def _address_is_unspecified(value):

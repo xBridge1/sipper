@@ -2,7 +2,17 @@
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPointF, QRectF, Qt, Signal, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ciper.gui.theme import FONTS, THEMES
 
@@ -529,6 +539,243 @@ class MetricGrid(QWidget):
         return texts
 
 
+VERDICT_TONES = {
+    "fail": "danger",
+    "degraded": "warning",
+    "risk": "warning",
+    "user": "low",
+    "ok": "success",
+}
+VERDICT_STATUS_TEXT = {
+    "fail": "FALHA",
+    "degraded": "DEGRADADA",
+    "risk": "RISCO",
+    "user": "RESULTADO NORMAL",
+    "ok": "OK",
+}
+
+
+def _html_escape(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+class VerdictBanner(QFrame):
+    """The answer first: what happened, the probable culprit and what to do.
+
+    ``compact`` shows only the headline, the culprit and the first action,
+    for the summary page; the diagnostic page shows the full reasoning.
+    """
+
+    def __init__(self, compact=False):
+        super().__init__()
+        self.compact = compact
+        self.setObjectName("verdictBanner")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.status_label = QLabel()
+        self.status_label.setObjectName("verdictStatus")
+        self.status_label.setFont(_font("small"))
+        self.confidence_label = QLabel()
+        self.confidence_label.setObjectName("mutedLabel")
+        self.confidence_bar = QProgressBar()
+        self.confidence_bar.setObjectName("verdictConfidence")
+        self.confidence_bar.setRange(0, 100)
+        self.confidence_bar.setTextVisible(False)
+        self.confidence_bar.setFixedSize(110, 8)
+        self.confirmed_label = QLabel()
+        self.confirmed_label.setObjectName("verdictConfirmed")
+        self.confirmed_label.setFont(_font("small"))
+        top.addWidget(self.status_label)
+        top.addWidget(self.confirmed_label)
+        top.addStretch(1)
+        top.addWidget(self.confidence_label)
+        top.addWidget(self.confidence_bar)
+        layout.addLayout(top)
+
+        self.headline_label = QLabel()
+        self.headline_label.setObjectName("verdictHeadline")
+        self.headline_label.setWordWrap(True)
+        self.headline_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.headline_label)
+
+        culprit_row = QHBoxLayout()
+        culprit_row.setSpacing(8)
+        self.culprit_caption = QLabel("PROVAVEL CULPADO")
+        self.culprit_caption.setObjectName("metricLabel")
+        self.culprit_caption.setFont(_font("small"))
+        self.culprit_label = QLabel()
+        self.culprit_label.setObjectName("verdictCulprit")
+        self.culprit_label.setWordWrap(True)
+        self.culprit_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        culprit_row.addWidget(self.culprit_caption, 0, Qt.AlignTop)
+        culprit_row.addWidget(self.culprit_label, 1)
+        layout.addLayout(culprit_row)
+
+        self.body_label = QLabel()
+        self.body_label.setObjectName("verdictBody")
+        self.body_label.setWordWrap(True)
+        self.body_label.setTextFormat(Qt.RichText)
+        self.body_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.body_label)
+
+        self.expanded = False
+        self.toggle_button = QPushButton("Mostrar raciocinio completo")
+        self.toggle_button.setObjectName("secondaryButton")
+        self.toggle_button.setCursor(Qt.PointingHandCursor)
+        self.toggle_button.clicked.connect(self._toggle_expanded)
+        self.toggle_button.setVisible(False)
+        layout.addWidget(self.toggle_button, 0, Qt.AlignLeft)
+        self._palette = None
+
+        self.stats_label = QLabel()
+        self.stats_label.setObjectName("mutedLabel")
+        self.stats_label.setWordWrap(True)
+        layout.addWidget(self.stats_label)
+        self.verdict = None
+
+    def set_empty(self, text):
+        self.verdict = None
+        for widget in (
+            self.status_label,
+            self.confirmed_label,
+            self.confidence_label,
+            self.confidence_bar,
+            self.culprit_caption,
+            self.culprit_label,
+            self.body_label,
+            self.stats_label,
+            self.toggle_button,
+        ):
+            widget.setVisible(False)
+        for label in (self.status_label, self.culprit_label, self.body_label, self.stats_label):
+            label.setText("")
+        self.headline_label.setText(text)
+        self.headline_label.setStyleSheet("")
+        self.setStyleSheet("")
+
+    def set_verdict(self, verdict, palette=None, stats_text=""):
+        palette = palette or THEMES["dark"]
+        if not verdict:
+            self.set_empty("Sem veredito disponivel.")
+            return
+        self.verdict = verdict
+        status = verdict.get("status", "ok")
+        tone = palette.get(VERDICT_TONES.get(status, "muted"), palette["muted"])
+        self.setStyleSheet(
+            f"QFrame#verdictBanner {{ background: {palette['surface']}; border: 1px solid {palette['border']};"
+            f" border-left: 6px solid {tone}; border-radius: 14px; }}"
+        )
+        self.status_label.setVisible(True)
+        self.status_label.setText(VERDICT_STATUS_TEXT.get(status, str(status).upper()))
+        self.status_label.setStyleSheet(
+            f"background: {tone}; color: #FFFFFF; border-radius: 8px; padding: 3px 9px; font-weight: 700;"
+        )
+        confirmed = verdict.get("confirmed_by")
+        self.confirmed_label.setVisible(bool(confirmed))
+        self.confirmed_label.setText(f"Confirmado pela resposta {confirmed}" if confirmed else "")
+        self.confirmed_label.setStyleSheet(
+            f"color: {palette['text']}; border: 1px solid {tone}; border-radius: 8px; padding: 2px 8px;"
+        )
+        confidence = float(verdict.get("confidence") or 0.0)
+        self.confidence_label.setVisible(True)
+        self.confidence_label.setText(f"Confianca {verdict.get('confidence_label', '-')} ({confidence:.0%})")
+        self.confidence_bar.setVisible(True)
+        self.confidence_bar.setValue(int(round(confidence * 100)))
+        self.confidence_bar.setStyleSheet(
+            f"QProgressBar {{ background: {palette['panel_alt']}; border: none; border-radius: 4px; }}"
+            f" QProgressBar::chunk {{ background: {tone}; border-radius: 4px; }}"
+        )
+        self.headline_label.setText(verdict.get("headline", ""))
+        self.headline_label.setStyleSheet(f"color: {palette['text']}; font-size: 15pt; font-weight: 700;")
+        show_culprit = status != "ok"
+        self.culprit_caption.setVisible(show_culprit)
+        self.culprit_label.setVisible(show_culprit)
+        self.culprit_label.setText(verdict.get("culprit") or "-")
+        self.culprit_label.setStyleSheet(f"color: {tone}; font-size: 11pt; font-weight: 600;")
+
+        self._palette = palette
+        self._render_body()
+        self.stats_label.setText(stats_text)
+        self.stats_label.setVisible(bool(stats_text))
+
+    def _toggle_expanded(self):
+        self.expanded = not self.expanded
+        self._render_body()
+
+    def _render_body(self):
+        if self.verdict is None:
+            return
+        body = self._body_html(self.verdict, self._palette or THEMES["dark"])
+        self.body_label.setText(body)
+        self.body_label.setVisible(bool(body))
+        has_more = not self.compact and bool(self.verdict.get("reasons"))
+        self.toggle_button.setVisible(has_more)
+        self.toggle_button.setText(
+            "Ocultar raciocinio" if self.expanded else "Mostrar raciocinio completo"
+        )
+
+    def _body_html(self, verdict, palette):
+        reasons = verdict.get("reasons") or []
+        actions = verdict.get("actions") or []
+        lines = verdict.get("offending_lines") or []
+        if self.compact:
+            return f"<b>Proximo passo:</b> {_html_escape(actions[0])}" if actions else ""
+        if not self.expanded:
+            parts = []
+            if lines:
+                code = "<br>".join(_html_escape(line) for line in lines[:3])
+                parts.append(
+                    f"<div style='font-family:Consolas; background:{palette['panel_alt']}; padding:6px 8px;"
+                    f" margin:2px 0 6px 0;'>{code}</div>"
+                )
+            if actions:
+                parts.append(f"<b>Proximo passo:</b> {_html_escape(actions[0])}")
+            return "".join(parts)
+        parts = []
+        if reasons:
+            items = "".join(f"<li style='margin-bottom:3px;'>{_html_escape(item)}</li>" for item in reasons)
+            parts.append(
+                "<div style='font-weight:600; margin-top:4px;'>Por que</div>"
+                f"<ol style='margin:2px 0 6px 0;'>{items}</ol>"
+            )
+        if lines:
+            code = "<br>".join(_html_escape(line) for line in lines)
+            parts.append(
+                "<div style='font-weight:600;'>Linha(s) com problema na mensagem</div>"
+                f"<div style='font-family:Consolas; background:{palette['panel_alt']}; padding:6px 8px;"
+                f" margin:2px 0 6px 0;'>{code}</div>"
+            )
+        if actions:
+            items = "".join(f"<li style='margin-bottom:3px;'>{_html_escape(item)}</li>" for item in actions)
+            parts.append(
+                "<div style='font-weight:600;'>O que fazer agora</div>"
+                f"<ol style='margin:2px 0 0 0;'>{items}</ol>"
+            )
+        return "".join(parts)
+
+    def text(self):
+        """All verdict text, for tests and copy/paste."""
+        labels = (
+            self.status_label,
+            self.headline_label,
+            self.culprit_label,
+            self.body_label,
+            self.stats_label,
+        )
+        return "\n".join(label.text() for label in labels if label.text())
+
+
 class StreamTimelineChart(QWidget):
     """RFC 3550 jitter over time for one RTP stream, with loss markers."""
 
@@ -697,6 +944,8 @@ class SIPLadderWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.flow = None
+        # message index -> short reason, drawn as a highlighted row.
+        self.highlighted = {}
         self.arrow_phase = 0.0
         self.arrow_animation = QVariantAnimation(self)
         self.arrow_animation.setStartValue(0.0)
@@ -706,6 +955,10 @@ class SIPLadderWidget(QWidget):
         self.arrow_animation.setEasingCurve(QEasingCurve.Linear)
         self.arrow_animation.valueChanged.connect(self._set_arrow_phase)
         self.setMinimumHeight(320)
+
+    def set_highlighted(self, highlighted):
+        self.highlighted = dict(highlighted or {})
+        self.update()
 
     def set_flow(self, flow):
         self.flow = flow
@@ -749,11 +1002,28 @@ class SIPLadderWidget(QWidget):
 
         for index, message in enumerate(self.flow.messages):
             y = top_y + 28 + (index * 44)
-            is_request = message.is_request
-            start_x = left_x if is_request else right_x
-            end_x = right_x if is_request else left_x
+            # Arrows follow the packet, not the message kind: a BYE from the
+            # callee goes right-to-left like a response.
+            from_left = message.source_ip == self.flow.source_ip
+            if message.source_ip == message.destination_ip or message.source_ip not in {self.flow.source_ip, self.flow.destination_ip}:
+                from_left = message.is_request
+            start_x = left_x if from_left else right_x
+            end_x = right_x if from_left else left_x
             arrow_color = self._message_color(message)
-            label = message.method if is_request else f"{message.status_code} {message.reason_phrase or ''}".strip()
+            if index in self.highlighted:
+                band = QColor(palette["danger"])
+                band.setAlpha(46)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(band)
+                painter.drawRoundedRect(QRectF(rect.left(), y - 21, rect.width(), 42), 8, 8)
+                painter.setPen(QColor(palette["danger"]))
+                painter.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
+                painter.drawText(
+                    QRectF(rect.left() + 4, y - 20, left_x - rect.left() - 12, 40),
+                    Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWordWrap,
+                    "! " + self.highlighted[index],
+                )
+            label = message.method if message.is_request else f"{message.status_code} {message.reason_phrase or ''}".strip()
             time_text = f"{message.packet_time:.3f}"
 
             painter.setPen(QPen(QColor(arrow_color), 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))

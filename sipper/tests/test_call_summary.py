@@ -52,7 +52,10 @@ def test_engine_builds_call_summary_for_established_call_with_media_issue():
     assert summary["media_state"] == "one_way_media"
     assert summary["has_rtp"] is True
     assert summary["severity"] == "high"
-    assert summary["primary_issue"] == "sip_call_one_way_audio"
+    # The directional RTP finding is the root cause: it says which way is silent.
+    assert summary["primary_issue"] == "rtp_one_way_audio"
+    assert summary["verdict"]["status"] == "fail"
+    assert summary["verdict"]["culprit_ip"] == "192.168.1.20"
     assert summary["codec_guesses"] == ["PCMU"]
     assert any("Call-ID: call-summary" == item for item in summary["key_evidence"])
     assert summary["recommended_action"]

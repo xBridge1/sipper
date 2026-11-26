@@ -6,13 +6,15 @@ from pathlib import Path
 from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
 
-from ciper.labels import display_severity, finding_title, severity_label, state_label
+from ciper.labels import display_severity, finding_title, severity_label, state_label, verdict_status_label
 
 
 def build_report_payload(viewmodel, source_pcap, capture_duration):
     return {
         "source_pcap": source_pcap,
         "capture_duration_seconds": capture_duration,
+        "diagnosis": viewmodel.get("diagnosis", {}),
+        "capture_point": viewmodel.get("capture_point", {}),
         "overview": viewmodel["overview"],
         "protocols": viewmodel["protocols"],
         "severity_counts": viewmodel["severity_counts"],
@@ -50,6 +52,9 @@ def export_csv(payload, destination):
         "loss_percent",
         "jitter_ms",
         "codec",
+        "verdict",
+        "probable_culprit",
+        "confidence",
     ]
 
     with Path(destination).open("w", encoding="utf-8", newline="") as file_handle:
@@ -74,6 +79,9 @@ def export_csv(payload, destination):
                     "loss_percent": f"{call['rtp_metrics']['loss_percent']:.2f}",
                     "jitter_ms": f"{call['rtp_metrics']['max_jitter'] * 1000:.2f}",
                     "codec": ", ".join(call["codec_guesses"]),
+                    "verdict": (call.get("verdict") or {}).get("headline", ""),
+                    "probable_culprit": (call.get("verdict") or {}).get("culprit", ""),
+                    "confidence": (call.get("verdict") or {}).get("confidence_label", ""),
                 }
             )
 
@@ -88,6 +96,8 @@ def export_csv(payload, destination):
                     "destination": finding["destination"],
                     "description": finding["description"],
                     "recommendation": finding["recommendation"],
+                    "probable_culprit": finding.get("culprit", ""),
+                    "verdict": f"confirmado por {finding['confirmed_by']}" if finding.get("confirmed_by") else "",
                 }
             )
 
@@ -123,12 +133,21 @@ def build_report_html(payload):
         f"<td>{_escape(finding_title(finding['type']))}<br><small>{_escape(finding['type'])}</small></td>"
         f"<td>{_escape(finding['source'])}</td>"
         f"<td>{_escape(finding['destination'])}</td>"
-        f"<td>{_escape(finding['description'])}"
+        f"<td><b>Culpado:</b> {_escape(finding.get('culprit') or finding.get('responsibility', '-'))}<br>"
+        f"{_escape(finding['description'])}"
         + "".join(f"<br><small>{_escape(item)}</small>" for item in finding.get("evidence_display", [])[:4])
         + "</td>"
         "</tr>"
         for finding in payload["findings"]
     ) or "<tr><td colspan='5'>Nenhum finding detectado.</td></tr>"
+    diagnosis = payload.get("diagnosis") or {}
+    verdict_html = _verdict_section(diagnosis)
+    capture = payload.get("capture_point") or {}
+    if capture.get("ip"):
+        verdict_html += (
+            f"<p><b>Ponto de captura:</b> {_escape(capture['ip'])} "
+            f"({'detectado automaticamente' if capture.get('auto') else 'configurado'})</p>"
+        )
     call_rows = "".join(
         "<tr>"
         f"<td>{_escape(call['call_id'])}</td>"
@@ -138,9 +157,11 @@ def build_report_html(payload):
         f"<td>{_escape(state_label(call['media_state']))}</td>"
         f"<td>{_escape(state_label(call.get('media_quality', 'unknown')))}</td>"
         f"<td>{call['rtp_metrics']['loss_percent']:.2f}%</td>"
+        f"<td>{_escape((call.get('verdict') or {}).get('headline', '-'))}"
+        f"<br><small>Culpado: {_escape((call.get('verdict') or {}).get('culprit', '-'))}</small></td>"
         "</tr>"
         for call in payload["calls"]
-    ) or "<tr><td colspan='7'>Nenhuma chamada SIP detectada.</td></tr>"
+    ) or "<tr><td colspan='8'>Nenhuma chamada SIP detectada.</td></tr>"
 
     return f"""
         <html>
@@ -153,6 +174,9 @@ def build_report_html(payload):
                     th {{ background: #17212B; color: white; text-align: left; }}
                     th, td {{ border: 1px solid #CBD5DF; padding: 6px; }}
                     .summary {{ background: #F3F6F8; padding: 12px; }}
+                    .verdict {{ border: 1px solid #CBD5DF; border-left: 6px solid #B1121C; padding: 10px 14px; margin-top: 14px; }}
+                    .verdict h2 {{ margin-top: 0; }}
+                    code {{ font-family: Consolas; background: #F3F6F8; }}
                 </style>
             </head>
             <body>
@@ -163,9 +187,10 @@ def build_report_html(payload):
                     <b>Chamadas:</b> {overview['call_count']} &nbsp;&nbsp;
                     <b>Findings:</b> {overview['finding_count']}
                 </div>
+                {verdict_html}
                 <h2>Chamadas SIP</h2>
                 <table>
-                    <tr><th>Call-ID</th><th>Origem</th><th>Destino</th><th>SIP</th><th>Midia</th><th>Qualidade</th><th>Loss</th></tr>
+                    <tr><th>Call-ID</th><th>Origem</th><th>Destino</th><th>SIP</th><th>Midia</th><th>Qualidade</th><th>Loss</th><th>Veredito</th></tr>
                     {call_rows}
                 </table>
                 <h2>Findings</h2>
@@ -176,6 +201,31 @@ def build_report_html(payload):
             </body>
         </html>
     """
+
+
+def _verdict_section(diagnosis):
+    if not diagnosis:
+        return ""
+    reasons = "".join(f"<li>{_escape(item)}</li>" for item in diagnosis.get("reasons", []))
+    actions = "".join(f"<li>{_escape(item)}</li>" for item in diagnosis.get("actions", []))
+    lines = "<br>".join(_escape(line) for line in diagnosis.get("offending_lines", []))
+    confirmed = (
+        f"<p><b>Confirmado pela resposta:</b> {_escape(diagnosis['confirmed_by'])}</p>"
+        if diagnosis.get("confirmed_by")
+        else ""
+    )
+    return (
+        "<div class='verdict'>"
+        f"<h2>Veredito: {_escape(verdict_status_label(diagnosis.get('status')))}</h2>"
+        f"<p><b>{_escape(diagnosis.get('headline', ''))}</b></p>"
+        f"<p><b>Provavel culpado:</b> {_escape(diagnosis.get('culprit', '-'))} "
+        f"(confianca {_escape(diagnosis.get('confidence_label', '-'))})</p>"
+        f"{confirmed}"
+        + (f"<p><b>Por que</b></p><ol>{reasons}</ol>" if reasons else "")
+        + (f"<p><b>Linha(s) com problema</b></p><p><code>{lines}</code></p>" if lines else "")
+        + (f"<p><b>O que fazer agora</b></p><ol>{actions}</ol>" if actions else "")
+        + "</div>"
+    )
 
 
 def _escape(value):

@@ -48,6 +48,31 @@ FINDING_TITLES = {
     "sip_retransmission": "Retransmissao de sinalizacao SIP",
     "sip_slow_call_setup": "Post-dial delay alto",
     "sip_sdp_private_address": "IP privado no SDP (NAT)",
+    "sip_header_control_characters": "Caractere de controle no header SIP",
+    "sip_header_invalid_encoding": "Header SIP com encoding invalido (nao UTF-8)",
+    "sip_header_non_ascii": "Acentos/UTF-8 em header de identidade",
+    "sip_header_duplicate_singleton": "Header SIP duplicado",
+    "sip_header_missing_mandatory": "Header SIP obrigatorio ausente",
+    "sip_header_missing_max_forwards": "Max-Forwards ausente",
+    "sip_header_missing_contact": "Contact ausente",
+    "sip_header_cseq_mismatch": "CSeq invalido ou divergente",
+    "sip_header_max_forwards": "Max-Forwards esgotado ou invalido",
+    "sip_header_variable_injection": "Possivel injecao de variavel FreeSWITCH (${...})",
+    "sip_header_malformed_address": "From/To/Contact malformado",
+    "sip_header_require_unsupported": "Require com extensao nao suportada",
+    "sip_header_content_encoding": "Corpo SIP comprimido (Content-Encoding)",
+    "sip_header_missing_content_type": "Corpo sem Content-Type",
+    "sip_header_tcp_missing_content_length": "SIP/TCP sem Content-Length",
+    "sip_header_bare_lf": "Quebra de linha LF sem CR",
+    "sip_header_folding": "Header SIP em varias linhas (folding)",
+    "sip_header_invalid_name": "Nome de header invalido",
+    "sip_header_missing_from_tag": "From sem tag",
+    "sip_header_invalid_version": "Versao SIP invalida",
+    "sip_request_uri_invalid": "Request-URI invalida",
+    "sip_sdp_malformed": "SDP malformado ou incompleto",
+    "sip_sdp_dynamic_payload_without_rtpmap": "Payload dinamico sem rtpmap no SDP",
+    "sip_sdp_secure_transport": "Oferta SRTP/DTLS no SDP",
+    "sip_abnormal_hangup": "Chamada derrubada (causa Q.850 anormal)",
     # RTP
     "rtp_packet_loss": "Perda de pacotes RTP",
     "rtp_high_jitter": "Jitter alto no RTP",
@@ -62,6 +87,20 @@ FINDING_TITLES = {
     "rtp_payload_not_negotiated": "Codec RTP nao negociado no SDP",
     "rtp_ptime_mismatch": "Ptime diferente do negociado",
     "rtp_source_mismatch": "RTP de origem diferente do SDP",
+    "rtp_silent_audio": "Audio mudo (RTP com silencio digital)",
+    "sip_sdp_answer_media_count": "Resposta SDP com linhas m= divergentes",
+    "sip_sdp_no_common_codec": "Sem codec de voz em comum no SDP",
+    "sip_sdp_answer_codec_not_offered": "Resposta SDP com codec nao ofertado",
+    "sip_sdp_dtmf_not_negotiated": "DTMF (telephone-event) removido na resposta",
+    "sip_sdp_dtmf_payload_mismatch": "Payload DTMF diferente entre oferta e resposta",
+    "sip_sdp_direction_mismatch": "Direcao SDP invalida na resposta",
+    "sip_contact_private_address": "Contact com IP privado (NAT)",
+    "sip_register_auth_rejected": "REGISTER com credenciais recusadas",
+    "sip_register_expires_nat": "Registro longo demais atras de NAT",
+    "sip_tls_signaling": "Sinalizacao SIP cifrada (TLS)",
+    "freeswitch_codec_mismatch": "Nenhum codec aceito pelo FreeSWITCH",
+    "freeswitch_profile_extension_disabled": "Extensao exigida desabilitada no FreeSWITCH",
+    "freeswitch_srtp_disabled": "SRTP exigido e desabilitado no FreeSWITCH",
     # RTCP
     "rtcp_reported_loss": "Perda reportada pelo RTCP",
     "rtcp_reported_jitter": "Jitter reportado pelo RTCP",
@@ -115,6 +154,7 @@ STATE_LABELS = {
     "no_media": "Sem midia",
     "one_way_media": "Midia em uma via",
     "degraded_media": "Midia degradada",
+    "silent_media": "Audio mudo",
     "inactive_media": "Midia inativa",
     "bidirectional": "Bidirecional",
     "unidirectional": "Unidirecional",
@@ -124,6 +164,18 @@ STATE_LABELS = {
     "poor": "Ruim",
     "unknown": "Desconhecido",
 }
+
+VERDICT_STATUS_LABELS = {
+    "fail": "Falha",
+    "degraded": "Degradada",
+    "risk": "Risco",
+    "user": "Resultado normal",
+    "ok": "OK",
+}
+
+
+def verdict_status_label(status):
+    return VERDICT_STATUS_LABELS.get(status, str(status or "-").capitalize())
 
 
 def finding_title(finding_type):
@@ -160,6 +212,63 @@ def is_actionable(finding):
 # Evidence lines keep stable English keys in the engine (they are parsed, e.g.
 # "Call-ID: ..."); only the displayed text is translated.
 EVIDENCE_LABELS = {
+    "Sender": "Enviado por",
+    "Offer": "Oferta",
+    "Answer": "Resposta",
+    "Offer m-lines": "Linhas m= na oferta",
+    "Answer m-lines": "Linhas m= na resposta",
+    "Offered codecs": "Codecs ofertados",
+    "Answered codecs": "Codecs da resposta",
+    "Offered telephone-event PT": "PT telephone-event ofertado",
+    "Answered telephone-event PT": "PT telephone-event da resposta",
+    "Answered telephone-event": "telephone-event na resposta",
+    "Offer direction": "Direcao da oferta",
+    "Answer direction": "Direcao da resposta",
+    "Contact": "Contact",
+    "User": "Usuario",
+    "Authenticated attempts rejected": "Tentativas autenticadas recusadas",
+    "Expires": "Expires",
+    "TLS session": "Sessao TLS",
+    "SNI": "SNI",
+    "FreeSWITCH codecs": "Codecs do FreeSWITCH",
+    "Require": "Require",
+    "G.711 packets": "Pacotes G.711",
+    "Silent packets": "Pacotes em silencio",
+    "Q.850 cause": "Causa Q.850",
+    "Blame": "Lado apontado",
+    "Hangup by": "Desligada por",
+    "Call duration before BYE": "Duracao ate o BYE",
+    "Receiver": "Recebido por",
+    "Headers": "Headers",
+    "Encoding": "Encoding",
+    "Duplicated headers": "Headers duplicados",
+    "Missing headers": "Headers ausentes",
+    "Request method": "Metodo da requisicao",
+    "Pattern": "Padrao",
+    "Malformed headers": "Headers malformados",
+    "Unquoted display names": "Display names sem aspas",
+    "Request-URI": "Request-URI",
+    "Problem": "Problema",
+    "Transport": "Transporte",
+    "Invalid header names": "Nomes de header invalidos",
+    "LF-only lines": "Linhas so com LF",
+    "Folded lines": "Linhas continuadas",
+    "SIP version": "Versao SIP",
+    "SDP problem": "Problema no SDP",
+    "Payload types without rtpmap": "Payload types sem rtpmap",
+    "Media profile": "Perfil de midia",
+    "Unsupported option tags": "Option tags nao suportadas",
+    "Messages affected": "Mensagens afetadas",
+    "Peer response": "Resposta do destino",
+    "Status": "Status",
+    "Rejected by": "Recusado por",
+    "Requested by": "Requisitado por",
+    "Meaning": "Significado",
+    "FreeSWITCH hangup cause": "Hangup cause no FreeSWITCH",
+    "Response Reason": "Reason na resposta",
+    "Response Warning": "Warning na resposta",
+    "Response Unsupported": "Unsupported na resposta",
+    "Response X-Reason": "X-Reason na resposta",
     "200 OK responses": "Respostas 200 OK",
     "ACK observed": "ACK observado",
     "ACKs": "ACKs",
@@ -269,6 +378,11 @@ EVIDENCE_LABELS = {
 }
 
 EVIDENCE_VALUES = {
+    "requester": "quem fez a requisicao",
+    "responder": "quem respondeu",
+    "negotiation": "negociacao entre os lados",
+    "downstream": "rede/servidor depois de quem respondeu",
+    "user": "usuario (resultado normal)",
     "yes": "sim",
     "no": "nao",
     "none": "nenhum",
@@ -285,7 +399,8 @@ def evidence_label(item):
     if label is None:
         return text
     value = EVIDENCE_VALUES.get(value.strip(), value)
-    value = value.replace(" seconds", " segundos").replace(" bytes", " bytes")
+    value = value.replace(" seconds", " segundos").replace(" (from ", " (de ")
+    value = value.replace("not valid UTF-8 (probably Latin-1)", "nao e UTF-8 valido (provavelmente Latin-1)")
     return f"{label}: {value}"
 
 

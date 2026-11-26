@@ -1,0 +1,22 @@
+{
+  "settings": {
+    "target_platform": "freeswitch",
+    "target_platform_ips": "10.0.0.20"
+  },
+  "diagnosis": {
+    "status": "ok",
+    "root_type": null,
+    "culprit_ip": null
+  },
+  "calls": {
+    "clean": {
+      "status": "ok",
+      "root_type": null,
+      "culprit_ip": null
+    }
+  },
+  "present_findings": [
+    "rtp_source_mismatch",
+    "sip_call_established"
+  ]
+}

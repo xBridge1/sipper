@@ -1,0 +1,15 @@
+{
+  "pcap": "../../../samples/teste_rst.pcap",
+  "settings": {},
+  "diagnosis": {
+    "status": "fail",
+    "root_type": "tcp_handshake_reset",
+    "culprit_ip": "192.168.1.1"
+  },
+  "calls": {},
+  "present_findings": [
+    "tcp_handshake_reset",
+    "tcp_reset",
+    "tls_malformed_record"
+  ]
+}

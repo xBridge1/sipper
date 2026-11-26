@@ -142,6 +142,25 @@ def build_stylesheet(palette):
         background: {palette["accent"]};
         border: 1px solid {palette["accent"]};
     }}
+    QCheckBox {{
+        background: transparent;
+        spacing: 8px;
+        color: {palette["text"]};
+    }}
+    QCheckBox::indicator {{
+        width: 15px;
+        height: 15px;
+        border-radius: 4px;
+        border: 1px solid {palette["muted"]};
+        background: {palette["panel_alt"]};
+    }}
+    QCheckBox::indicator:checked {{
+        background: {palette["accent"]};
+        border: 1px solid {palette["accent"]};
+    }}
+    QCheckBox:disabled {{
+        color: {palette["muted"]};
+    }}
     QLineEdit, QTextEdit, QTableWidget, QComboBox, QSpinBox, QDoubleSpinBox {{
         background: {palette["surface"]};
         border: 1px solid {palette["border"]};

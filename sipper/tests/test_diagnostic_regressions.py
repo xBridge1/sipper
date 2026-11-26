@@ -145,7 +145,10 @@ def test_authenticated_invite_in_progress_has_consistent_state():
 
     assert summary["signaling_state"] == "incomplete"
     assert "sip_error_response" not in summary["finding_types"]
-    assert summary["primary_issue"] is None
+    # The synthetic INVITE has no Via/Contact, which the header hygiene check
+    # rightly reports; the 401 challenge itself must never be the issue.
+    assert summary["primary_issue"] in {None} or summary["primary_issue"].startswith("sip_header_")
+    assert summary["verdict"]["root_type"] != "sip_error_response"
 
 
 def test_invite_retransmission_is_not_counted_as_reinvite():

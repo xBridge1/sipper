@@ -48,6 +48,31 @@ FREESWITCH_AUDIO_REFERENCE = {
     "url": "https://developer.signalwire.com/freeswitch/troubleshooting/audio/",
     "scope": "Diagnostico de enderecos SDP, NAT, ext-rtp-ip, ausencia e assimetria de RTP.",
 }
+SDP_FORMAT_REFERENCE = {
+    "title": "RFC 8866 - SDP: Session Description Protocol",
+    "url": "https://datatracker.ietf.org/doc/html/rfc8866",
+    "scope": "Linhas obrigatorias v=, o=, s=, t=, c=, m= e mapeamento a=rtpmap de payloads dinamicos.",
+}
+SIP_STATUS_REFERENCE = {
+    "title": "RFC 3261 secao 21 - Definicoes dos codigos de resposta SIP",
+    "url": "https://datatracker.ietf.org/doc/html/rfc3261#section-21",
+    "scope": "Significado de cada codigo 4xx, 5xx e 6xx usado para atribuir o provavel culpado.",
+}
+FREESWITCH_HANGUP_REFERENCE = {
+    "title": "FreeSWITCH - Hangup Cause Code Table",
+    "url": "https://developer.signalwire.com/freeswitch/reference/hangup-causes/",
+    "scope": "Relacao entre hangup causes do FreeSWITCH e codigos de resposta SIP.",
+}
+Q850_REFERENCE = {
+    "title": "RFC 3326 - The Reason Header Field for SIP (causas Q.850)",
+    "url": "https://datatracker.ietf.org/doc/html/rfc3326",
+    "scope": "Header Reason com a causa Q.850 que explica recusas e quedas de chamada.",
+}
+NAT_REFERENCE = {
+    "title": "FreeSWITCH - NAT Traversal",
+    "url": "https://developer.signalwire.com/freeswitch/networking/nat-traversal/",
+    "scope": "Contact/SDP com IP privado, aggressive-nat-detection, NDLB-* e ext-sip-ip/ext-rtp-ip.",
+}
 SIP_TIMER_REFERENCE = {
     "title": "RFC 4028 - Session Timers in SIP",
     "url": "https://datatracker.ietf.org/doc/html/rfc4028",
@@ -139,6 +164,29 @@ def references_for_finding_type(finding_type):
             references.append(SIP_TIMER_REFERENCE)
         if finding_type == "sip_sdp_private_address":
             references.append(SDP_REFERENCE)
+        if finding_type.startswith("sip_sdp_") and finding_type != "sip_sdp_private_address":
+            references.append(SDP_FORMAT_REFERENCE)
+        if finding_type == "sip_error_response":
+            references.extend([SIP_STATUS_REFERENCE, FREESWITCH_HANGUP_REFERENCE, Q850_REFERENCE])
+        if finding_type == "sip_abnormal_hangup":
+            references.extend([Q850_REFERENCE, FREESWITCH_HANGUP_REFERENCE])
+        if finding_type in {
+            "sip_sdp_answer_media_count",
+            "sip_sdp_no_common_codec",
+            "sip_sdp_answer_codec_not_offered",
+            "sip_sdp_direction_mismatch",
+        }:
+            references.append(SDP_REFERENCE)
+        if finding_type in {"sip_sdp_dtmf_not_negotiated", "sip_sdp_dtmf_payload_mismatch"}:
+            references.extend([SDP_REFERENCE, DTMF_REFERENCE])
+        if finding_type in {"sip_contact_private_address", "sip_register_expires_nat"}:
+            references.append(NAT_REFERENCE)
+        if finding_type == "sip_tls_signaling":
+            references.append(TLS_REFERENCE)
+        if finding_type in {"sip_header_variable_injection", "sip_header_invalid_encoding", "sip_request_uri_invalid"}:
+            references.append(FREESWITCH_VARIABLES_REFERENCE)
+        if finding_type in {"sip_header_require_unsupported", "sip_sdp_secure_transport"}:
+            references.append(FREESWITCH_SOFIA_REFERENCE)
         if any(token in finding_type for token in ("fragment", "mtu")):
             references.extend([IPV4_REFERENCE, IPV6_REFERENCE])
         return references

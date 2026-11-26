@@ -1,5 +1,6 @@
 from collections import Counter
 
+from ciper.diagnosis import EndpointNamer, describe_culprit, specific_title
 from ciper.findings import describe_responsibility
 from ciper.labels import display_severity, evidence_labels, finding_title, severity_label, state_label
 from ciper.voip_quality import estimate_mos
@@ -13,6 +14,16 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
     call_summaries = engine_result.get("call_summaries", [])
     protocol_items = _build_protocol_items(packet_analysis["protocols"])
     severity_counts = Counter(finding.severity for finding in findings)
+    profile = engine_result.get("analysis_profile", {}) or {}
+    namer = EndpointNamer(
+        profile.get("target_platform_ips", "") if profile.get("target_platform") == "freeswitch" else ""
+    )
+    root_keys = _root_cause_keys(call_summaries, engine_result.get("diagnosis") or {})
+    propagated = {
+        summary["call_id"]: summary["verdict"]
+        for summary in call_summaries
+        if (summary.get("verdict") or {}).get("propagated_from")
+    }
 
     return {
         "overview": {
@@ -26,10 +37,10 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
         },
         "protocols": protocol_items,
         "findings": [
-            {
+            _apply_leg_propagation(finding, propagated, {
                 "key": f"{index}:{finding.type}:{finding.source_ip}:{finding.destination_ip}",
                 "type": finding.type,
-                "title": finding_title(finding.type),
+                "title": specific_title(finding),
                 "severity": finding.severity,
                 "confidence": getattr(finding, "confidence", 0.0),
                 "display_severity": display_severity(finding.type, finding.severity),
@@ -45,7 +56,12 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "responsibility": describe_responsibility(finding)[0],
                 "responsibility_confidence": describe_responsibility(finding)[1],
                 "responsibility_reason": describe_responsibility(finding)[2],
-            }
+                "culprit_ip": getattr(finding, "culprit_ip", None),
+                "culprit": describe_culprit(finding, namer)[0],
+                "is_root_cause": _is_root_cause(finding, root_keys),
+                "confirmed_by": getattr(finding, "confirmed_by", None),
+                "offending_lines": list(getattr(finding, "offending_lines", []) or []),
+            })
             for index, finding in enumerate(findings)
         ],
         "severity_counts": {
@@ -54,6 +70,8 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
             "low": severity_counts.get("low", 0),
         },
         "capture_timebase": engine_result.get("traffic_timebase"),
+        "diagnosis": dict(engine_result.get("diagnosis") or {}),
+        "capture_point": dict(engine_result.get("capture_point") or {}),
         "analysis_profile": dict(engine_result.get("analysis_profile", {})),
         "calls": [
             {
@@ -77,6 +95,10 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
                 "key_evidence": summary.get("key_evidence", []),
                 "key_evidence_display": evidence_labels(summary.get("key_evidence", [])),
                 "recommended_action": summary["recommended_action"],
+                "verdict": dict(summary.get("verdict") or {}),
+                "hangup": summary.get("hangup"),
+                "legs": summary.get("legs"),
+                "dtmf": summary.get("dtmf"),
                 "source_ip": summary["source_ip"],
                 "destination_ip": summary["destination_ip"],
                 "rtp_stream_count": summary.get("rtp_stream_count", 0),
@@ -105,6 +127,53 @@ def build_dashboard_viewmodel(packet_analysis, engine_result):
             call_summaries,
         ),
     }
+
+
+def _finding_call_ids(finding):
+    return {
+        item.removeprefix("Call-ID: ").strip()
+        for item in getattr(finding, "evidence", [])
+        if item.startswith("Call-ID: ")
+    }
+
+
+def _root_cause_keys(call_summaries, diagnosis):
+    keys = set()
+    for summary in call_summaries:
+        verdict = summary.get("verdict") or {}
+        if verdict.get("propagated_from"):
+            # The real root lives in the leg B call, which adds its own key.
+            continue
+        if verdict.get("root_type") and verdict.get("status") not in {None, "ok"}:
+            keys.add((summary["call_id"], verdict["root_type"]))
+    if diagnosis.get("root_type") and not diagnosis.get("worst_call_id"):
+        keys.add((None, diagnosis["root_type"]))
+    return keys
+
+
+def _apply_leg_propagation(finding, propagated, item):
+    """A leg-A rejection only relays leg B: point the row at leg B's culprit."""
+    if finding.type != "sip_error_response":
+        return item
+    for call_id in _finding_call_ids(finding):
+        verdict = propagated.get(call_id)
+        if verdict is None:
+            continue
+        item["culprit"] = f"{finding.source_ip} repassou a falha da perna B; culpado: {verdict.get('culprit', '-')}"
+        item["responsibility"] = "Perna B (repassada pelo B2BUA)"
+        item["responsibility_reason"] = (
+            f"{finding.source_ip} so traduziu para a perna A a falha recebida na perna B "
+            f"(Call-ID {verdict['propagated_from']})."
+        )
+        item["is_root_cause"] = False
+    return item
+
+
+def _is_root_cause(finding, root_keys):
+    call_ids = _finding_call_ids(finding)
+    if not call_ids:
+        return (None, finding.type) in root_keys
+    return any((call_id, finding.type) in root_keys for call_id in call_ids)
 
 
 def _build_protocol_items(protocol_counter):
@@ -219,7 +288,7 @@ def _finding_category(finding_type):
     if finding_type.startswith(("rtp_", "rtcp_")):
         return "RTP e midia"
     if finding_type.startswith("sip_"):
-        if "header" in finding_type or "fragmentation" in finding_type or "content_length" in finding_type:
+        if any(token in finding_type for token in ("header", "fragmentation", "content_length", "request_uri", "sdp_malformed", "sdp_dynamic", "sdp_secure")):
             return "SIP, headers e MTU"
         return "SIP e sinalizacao"
     if finding_type.startswith("ip_fragment") or finding_type == "icmp_fragmentation_needed":

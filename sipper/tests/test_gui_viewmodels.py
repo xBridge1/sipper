@@ -70,7 +70,7 @@ def test_build_dashboard_viewmodel():
     assert viewmodel["calls"][0]["key_evidence"] == ["Call-ID: CALL-1"]
     assert viewmodel["findings"][0]["category"] == "SIP e sinalizacao"
     assert viewmodel["findings"][0]["evidence"] == ["Evidencia de teste"]
-    assert viewmodel["findings"][0]["responsibility"] == "Em investigacao"
+    assert viewmodel["findings"][0]["responsibility"] == "Caminho de midia"
 
 
 def test_dashboard_uses_analyzed_packet_count_instead_of_protocol_sum():

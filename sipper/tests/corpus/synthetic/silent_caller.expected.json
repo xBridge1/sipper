@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "target_platform": "freeswitch",
+    "target_platform_ips": "10.0.0.20"
+  },
+  "diagnosis": {
+    "status": "fail",
+    "root_type": "rtp_silent_audio",
+    "culprit_ip": "198.51.100.10"
+  },
+  "calls": {
+    "mute": {
+      "status": "fail",
+      "root_type": "rtp_silent_audio",
+      "culprit_ip": "198.51.100.10"
+    }
+  },
+  "present_findings": [
+    "rtp_silent_audio",
+    "rtp_source_mismatch",
+    "sip_call_established"
+  ]
+}

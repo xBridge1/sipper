@@ -5,19 +5,15 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEasingCurve, QSize, QPropertyAnimation, QThread, QTimer, QUrl, Qt
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QComboBox,
-    QDialog,
-    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QGraphicsOpacityEffect,
-    QHeaderView,
     QHBoxLayout,
     QLayout,
     QLabel,
@@ -29,18 +25,22 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QStackedWidget,
     QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
     QStyle,
 )
 
-from ciper.gui.evidence import build_finding_evidence_context
-from ciper.labels import SEVERITY_ORDER, finding_title, is_actionable, severity_label, state_label
+from ciper.labels import (
+    SEVERITY_ORDER,
+    finding_title,
+    is_actionable,
+    severity_label,
+    state_label,
+    verdict_status_label,
+)
 from ciper.gui.styles import build_stylesheet
 from ciper.gui.theme import THEMES
 from ciper.gui.viewmodels import build_dashboard_viewmodel
@@ -51,12 +51,17 @@ from ciper.gui.widgets import (
     KPIStat,
     MetricGrid,
     PanelCard,
-    SIPLadderWidget,
     StreamTimelineChart,
     TrafficChart,
+    VERDICT_TONES,
+    VerdictBanner,
     _font,
     make_nav_icon,
 )
+from ciper.gui.rendering import HtmlRenderingMixin
+from ciper.gui.tables import TablesMixin
+from ciper.gui.settings_page import SettingsPageMixin
+from ciper.gui.diagnostic_page import DiagnosticPageMixin
 from ciper.gui.workers import AnalysisWorker, UpdateCheckWorker
 from ciper.reporting import build_report_payload, export_csv, export_json, export_pdf
 from ciper.resources import resource_path
@@ -64,10 +69,6 @@ from ciper.settings import add_recent_file, load_settings, save_settings
 from ciper.voip_quality import (
     LOSS_HIGH_QUALITY_PERCENT,
     LOSS_TARGET_PERCENT,
-    jitter_observation,
-    mos_observation,
-    packet_loss_observation,
-    quality_reference_note,
 )
 from ciper.updater import CURRENT_VERSION
 
@@ -80,7 +81,7 @@ LIGHT_SPLASH_LOGO_PATH = resource_path("logo", "splash_black.png")
 
 
 
-class SipperWindow(QMainWindow):
+class SipperWindow(HtmlRenderingMixin, TablesMixin, SettingsPageMixin, DiagnosticPageMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SIPPER")
@@ -452,46 +453,31 @@ class SipperWindow(QMainWindow):
         self.summary_recent_findings.add_widget(self.summary_findings_table)
         self.summary_traffic.add_widget(self.summary_traffic_chart, 1)
 
-        layout.addWidget(self.summary_metrics, 0, 0)
-        layout.addWidget(self.summary_protocols, 0, 1)
-        layout.addWidget(self.summary_findings, 0, 2)
-        layout.addWidget(self.summary_recent_findings, 1, 0, 1, 3)
-        layout.addWidget(self.summary_traffic, 2, 0, 1, 3)
+        self.summary_verdict = VerdictBanner(compact=True)
+        self.summary_verdict.setToolTip("Clique para abrir o diagnostico completo")
+        self.summary_verdict.mousePressEvent = lambda _event: self._set_page("Diagnostico")
+        self.summary_verdict.setCursor(Qt.PointingHandCursor)
+
+        layout.setRowStretch(0, 0)
+        layout.setRowStretch(1, 0)
+        layout.setRowStretch(2, 1)
+        layout.setRowStretch(3, 1)
+        layout.addWidget(self.summary_verdict, 0, 0, 1, 3)
+        layout.addWidget(self.summary_metrics, 1, 0)
+        layout.addWidget(self.summary_protocols, 1, 1)
+        layout.addWidget(self.summary_findings, 1, 2)
+        layout.addWidget(self.summary_recent_findings, 2, 0, 1, 3)
+        layout.addWidget(self.summary_traffic, 3, 0, 1, 3)
         self.welcome_card = self._build_welcome_card()
-        layout.addWidget(self.welcome_card, 0, 0, 3, 3)
+        layout.addWidget(self.welcome_card, 0, 0, 4, 3)
         self._register_page_cards(
             "Resumo",
+            self.summary_verdict,
             self.summary_metrics,
             self.summary_protocols,
             self.summary_findings,
             self.summary_recent_findings,
             self.summary_traffic,
-        )
-
-    def _build_diagnostic_page(self):
-        _page, layout = self._new_grid_page("Diagnostico", [4, 5], [0, 1])
-        self.diagnostic_priority = PanelCard("Prioridade de acao")
-        self.diagnostic_scope = PanelCard("Escopo do impacto")
-        self.diagnostic_incidents = PanelCard("Fila de incidentes")
-        self.diagnostic_detail = PanelCard("Evidencia e proxima acao")
-        self.diagnostic_priority_text = MetricGrid(columns=2)
-        self.diagnostic_scope_text = MetricGrid(columns=2)
-        self.diagnostic_incidents_table = self._make_incident_table()
-        self.diagnostic_detail_text = self._make_text()
-        self.diagnostic_priority.add_widget(self.diagnostic_priority_text)
-        self.diagnostic_scope.add_widget(self.diagnostic_scope_text)
-        self.diagnostic_incidents.add_widget(self.diagnostic_incidents_table)
-        self.diagnostic_detail.add_widget(self.diagnostic_detail_text)
-        layout.addWidget(self.diagnostic_priority, 0, 0)
-        layout.addWidget(self.diagnostic_scope, 0, 1)
-        layout.addWidget(self.diagnostic_incidents, 1, 0)
-        layout.addWidget(self.diagnostic_detail, 1, 1)
-        self._register_page_cards(
-            "Diagnostico",
-            self.diagnostic_priority,
-            self.diagnostic_scope,
-            self.diagnostic_incidents,
-            self.diagnostic_detail,
         )
 
     def _build_sip_page(self):
@@ -532,6 +518,10 @@ class SipperWindow(QMainWindow):
         self.sip_calls.add_widget(self.sip_calls_table)
         self.sip_detail.add_widget(self.sip_flow)
         self.sip_detail.add_widget(self.sip_open_flow_button)
+        self.sip_copy_call_button = QPushButton("Copiar resumo da chamada")
+        self.sip_copy_call_button.setObjectName("secondaryButton")
+        self.sip_copy_call_button.clicked.connect(self._copy_call_ticket)
+        self.sip_detail.add_widget(self.sip_copy_call_button)
         self.sip_detail.add_widget(self.sip_detail_text)
         layout.addWidget(self.sip_state, 0, 0)
         layout.addWidget(self.sip_findings, 0, 1)
@@ -699,87 +689,6 @@ class SipperWindow(QMainWindow):
         layout.addWidget(self.stats_calls, 1, 1)
         self._register_page_cards("Estatisticas", self.stats_traffic, self.stats_protocols, self.stats_calls)
 
-    def _build_settings_page(self):
-        page = self._new_page("Configuracoes")
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        card = PanelCard("Preferencias de Analise")
-        content = QWidget()
-        form = QGridLayout(content)
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(14)
-
-        self.settings_jitter = QDoubleSpinBox()
-        self.settings_jitter.setRange(1.0, 500.0)
-        self.settings_jitter.setDecimals(1)
-        self.settings_jitter.setSuffix(" ms")
-
-        self.settings_loss = QSpinBox()
-        self.settings_loss.setRange(1, 100)
-        self.settings_loss.setSuffix(" pacotes")
-
-        self.settings_loss_percent = QDoubleSpinBox()
-        self.settings_loss_percent.setRange(0.01, 50.0)
-        self.settings_loss_percent.setDecimals(2)
-        self.settings_loss_percent.setSingleStep(0.5)
-        self.settings_loss_percent.setSuffix(" %")
-
-        self.settings_traffic_points = QSpinBox()
-        self.settings_traffic_points.setRange(60, 5000)
-        self.settings_traffic_points.setSuffix(" pontos")
-
-        self.settings_max_pcap_size = QSpinBox()
-        self.settings_max_pcap_size.setRange(1, 10240)
-        self.settings_max_pcap_size.setSuffix(" MB")
-
-        self.settings_platform = QComboBox()
-        self.settings_platform.addItem("SIP/RTP generico", "generic")
-        self.settings_platform.addItem("FreeSWITCH", "freeswitch")
-        self.settings_platform.currentIndexChanged.connect(
-            self._update_platform_settings_state
-        )
-
-        self.settings_platform_ips = QLineEdit()
-        self.settings_platform_ips.setPlaceholderText(
-            "Ex.: 10.0.0.20, 10.0.0.21 ou 10.0.0.0/24"
-        )
-
-        self.settings_export_directory = QLineEdit()
-        self.settings_export_directory.setReadOnly(True)
-        self.settings_export_directory_button = QPushButton("Escolher pasta")
-        self.settings_export_directory_button.setObjectName("secondaryButton")
-        self.settings_export_directory_button.clicked.connect(self._choose_export_directory)
-        export_row = QWidget()
-        export_layout = QHBoxLayout(export_row)
-        export_layout.setContentsMargins(0, 0, 0, 0)
-        export_layout.setSpacing(8)
-        export_layout.addWidget(self.settings_export_directory, 1)
-        export_layout.addWidget(self.settings_export_directory_button)
-
-        rows = [
-            ("Jitter RTP alto", self.settings_jitter),
-            ("Perda RTP para severidade alta", self.settings_loss_percent),
-            ("Minimo de pacotes perdidos para alta", self.settings_loss),
-            ("Maximo de pontos no grafico", self.settings_traffic_points),
-            ("Tamanho maximo do PCAP", self.settings_max_pcap_size),
-            ("Plataforma VoIP", self.settings_platform),
-            ("IPs da plataforma monitorada", self.settings_platform_ips),
-            ("Pasta padrao para relatorios", export_row),
-        ]
-        for row, (label, widget) in enumerate(rows):
-            form.addWidget(QLabel(label), row, 0)
-            form.addWidget(widget, row, 1)
-
-        self.settings_save_button = QPushButton("Salvar configuracoes")
-        self.settings_save_button.setObjectName("primaryButton")
-        self.settings_save_button.clicked.connect(self._save_settings)
-        form.addWidget(self.settings_save_button, len(rows), 1, alignment=Qt.AlignRight)
-        form.setColumnStretch(1, 1)
-        card.add_widget(content)
-        layout.addWidget(card)
-        self._register_page_cards("Configuracoes", card)
-
     def _build_about_page(self):
         page = self._new_page("Sobre")
         layout = QVBoxLayout(page)
@@ -813,113 +722,6 @@ class SipperWindow(QMainWindow):
         widget.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         widget.setAcceptRichText(True)
         return widget
-
-    def _make_calls_table(self):
-        table = QTableWidget(0, 6)
-        table.setHorizontalHeaderLabels(
-            ["ID", "Origem", "Destino", "Inicio", "Duracao", "Status"]
-        )
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
-        table.setWordWrap(False)
-        table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 72, stretch_columns=(0,))
-        table.verticalHeader().setDefaultSectionSize(28)
-        table.itemSelectionChanged.connect(self._on_call_selected)
-        return table
-
-    def _make_findings_table(self):
-        table = QTableWidget(0, 5)
-        table.setHorizontalHeaderLabels(["Severidade", "Camada", "Problema", "Origem", "Destino"])
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
-        table.setWordWrap(False)
-        table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 90, stretch_columns=(2,))
-        table.verticalHeader().setDefaultSectionSize(28)
-        table.itemSelectionChanged.connect(self._on_finding_selected)
-        return table
-
-    def _make_incident_table(self):
-        table = QTableWidget(0, 4)
-        table.setHorizontalHeaderLabels(["Prioridade", "Incidente", "De \u2192 Para", "Responsavel"])
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
-        table.setWordWrap(False)
-        table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 90, stretch_columns=(1,))
-        table.verticalHeader().setDefaultSectionSize(32)
-        table.itemSelectionChanged.connect(self._on_finding_selected)
-        return table
-
-    def _make_rtp_table(self):
-        table = QTableWidget(0, 8)
-        table.setHorizontalHeaderLabels(
-            ["Fluxo", "SSRC", "Codec", "Pacotes", "Perda", "Jitter max", "MOS", "Duracao"]
-        )
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
-        table.setWordWrap(False)
-        table.setCornerButtonEnabled(False)
-        self._configure_responsive_table(table, 64, stretch_columns=(0,))
-        table.verticalHeader().setDefaultSectionSize(28)
-        return table
-
-    def _configure_responsive_table(self, table, minimum_section_width, stretch_columns=None):
-        header = table.horizontalHeader()
-        header.setMinimumSectionSize(minimum_section_width)
-        header.setDefaultSectionSize(minimum_section_width)
-        if stretch_columns:
-            # Short columns (severity, ports, counters) fit their content and the
-            # descriptive columns share the remaining width, so titles are not cut.
-            header.setSectionResizeMode(QHeaderView.ResizeToContents)
-            for column in stretch_columns:
-                header.setSectionResizeMode(column, QHeaderView.Stretch)
-        else:
-            header.setSectionResizeMode(QHeaderView.Stretch)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        table.setTextElideMode(Qt.ElideRight)
-        table.setContextMenuPolicy(Qt.ActionsContextMenu)
-        copy_action = QAction("Copiar linha", table)
-        copy_action.setShortcut(QKeySequence.Copy)
-        copy_action.setShortcutContext(Qt.WidgetShortcut)
-        copy_action.triggered.connect(lambda _checked=False, source=table: self._copy_table_selection(source))
-        table.addAction(copy_action)
-
-    def _copy_table_selection(self, table):
-        rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
-        if not rows:
-            return
-        headers = [
-            table.horizontalHeaderItem(column).text() if table.horizontalHeaderItem(column) else ""
-            for column in range(table.columnCount())
-        ]
-        lines = ["\t".join(headers)]
-        for row in rows:
-            lines.append(
-                "\t".join(
-                    table.item(row, column).text() if table.item(row, column) else ""
-                    for column in range(table.columnCount())
-                )
-            )
-        QApplication.clipboard().setText("\n".join(lines))
-        self._set_status(f"{len(rows)} linha(s) copiada(s)")
 
     def _choose_file(self):
         if self.analysis_thread is not None:
@@ -1368,52 +1170,6 @@ class SipperWindow(QMainWindow):
         self._render_settings_page()
         self._render_about_page()
 
-    def _render_diagnostic_page(self):
-        palette = THEMES[self.current_theme]
-        if self.last_viewmodel is None:
-            self.diagnostic_priority_text.set_message("Abra um PCAP para priorizar incidentes.")
-            self.diagnostic_scope_text.set_message("Nenhum diagnostico carregado.")
-            self.diagnostic_detail_text.setPlainText("Selecione um incidente para ver as evidencias.")
-            self._fill_incident_table(self.diagnostic_incidents_table, [])
-            return
-
-        incidents = self._sorted_incidents(self.last_viewmodel["findings"])
-        actionable = [
-            finding
-            for finding in incidents
-            if finding["severity"] in {"high", "medium"} and is_actionable(finding)
-        ]
-        top = actionable[0] if actionable else (incidents[0] if incidents else None)
-        if top is None or not actionable:
-            self.diagnostic_priority_text.set_metrics(
-                [("Resultado", "Nenhum problema detectado na captura", "success", 2)],
-                palette,
-            )
-        else:
-            severity = self._display_severity(top)
-            self.diagnostic_priority_text.set_metrics(
-                [
-                    ("Incidente", self._finding_title(top), self._severity_tone(severity), 2),
-                    ("Prioridade", severity_label(severity), self._severity_tone(severity)),
-                    ("Possivel responsavel", top["responsibility"]),
-                    ("De", top["source"]),
-                    ("Para", top["destination"]),
-                ],
-                palette,
-            )
-        high_count = sum(1 for finding in actionable if self._display_severity(finding) == "high")
-        self.diagnostic_scope_text.set_metrics(
-            [
-                ("Acionaveis", len(actionable), "danger" if high_count else ("warning" if actionable else "success")),
-                ("Severidade alta", high_count, "danger" if high_count else None),
-                ("Camadas afetadas", self._finding_category_summary(actionable or incidents), None, 2),
-                ("Atribuicao principal", self._responsibility_summary(actionable or incidents), None, 2),
-            ],
-            palette,
-        )
-        self._fill_incident_table(self.diagnostic_incidents_table, actionable or incidents)
-        self._render_diagnostic_detail(self._selected_finding(actionable or incidents))
-
     def _render_summary_page(self):
         has_data = self.last_viewmodel is not None
         self.welcome_card.setVisible(not has_data)
@@ -1454,6 +1210,11 @@ class SipperWindow(QMainWindow):
         self.kpi_high.set_value(sum(1 for finding in actionable if finding["severity"] == "high"))
         self.kpi_mos.set_value(f"{sum(mos_values) / len(mos_values):.2f}" if mos_values else "-")
         self.kpi_duration.set_value(self._format_duration(self.capture_duration))
+        self.summary_verdict.set_verdict(
+            viewmodel.get("diagnosis") or {},
+            THEMES[self.current_theme],
+            self._diagnosis_stats_text(viewmodel.get("diagnosis") or {}),
+        )
         self._fill_calls_table(self.summary_calls_table, viewmodel["calls"])
         self._fill_rtp_table(
             self.summary_rtp_table,
@@ -1982,53 +1743,6 @@ class SipperWindow(QMainWindow):
             "vertical",
         )
 
-    def _render_settings_page(self):
-        self.settings_jitter.setValue(self.analysis_settings.rtp_high_jitter_threshold * 1000)
-        self.settings_loss.setValue(self.analysis_settings.rtp_loss_high_threshold)
-        self.settings_loss_percent.setValue(self.analysis_settings.rtp_loss_high_percent)
-        self.settings_traffic_points.setValue(self.analysis_settings.max_traffic_points)
-        self.settings_max_pcap_size.setValue(self.analysis_settings.max_pcap_size_mb)
-        self._select_filter_value(
-            self.settings_platform,
-            self.analysis_settings.target_platform,
-        )
-        self.settings_platform_ips.setText(self.analysis_settings.target_platform_ips)
-        self._update_platform_settings_state()
-        self.settings_export_directory.setText(self.analysis_settings.export_directory)
-
-    def _update_platform_settings_state(self):
-        self.settings_platform_ips.setEnabled(
-            self.settings_platform.currentData() == "freeswitch"
-        )
-
-    def _choose_export_directory(self):
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Escolha a pasta padrao para relatorios",
-            self.settings_export_directory.text(),
-        )
-        if directory:
-            self.settings_export_directory.setText(directory)
-
-    def _save_settings(self):
-        self.analysis_settings = replace(
-            self.analysis_settings,
-            rtp_high_jitter_threshold=self.settings_jitter.value() / 1000,
-            rtp_loss_high_threshold=self.settings_loss.value(),
-            rtp_loss_high_percent=self.settings_loss_percent.value(),
-            max_traffic_points=self.settings_traffic_points.value(),
-            max_pcap_size_mb=self.settings_max_pcap_size.value(),
-            export_directory=self.settings_export_directory.text().strip() or str(Path.home()),
-            target_platform=self.settings_platform.currentData() or "generic",
-            target_platform_ips=self.settings_platform_ips.text().strip(),
-        )
-        try:
-            save_settings(self.analysis_settings)
-        except OSError as error:
-            self._set_status(f"Falha ao salvar configuracoes: {error}")
-            return
-        self._set_status("Configuracoes salvas")
-
     def _render_about_page(self):
         self.about_text.setPlainText(
             "\n".join(
@@ -2100,121 +1814,6 @@ class SipperWindow(QMainWindow):
             self.update_thread.quit()
             self.update_thread.wait(4000)
         super().closeEvent(event)
-
-    def _fill_calls_table(self, table, calls):
-        palette = THEMES[self.current_theme]
-        table.blockSignals(True)
-        table.setRowCount(len(calls))
-        for row, call in enumerate(calls):
-            values = [
-                call["call_id"],
-                call["source_ip"],
-                call["destination_ip"],
-                self._format_packet_time(call["start_time"]),
-                self._format_duration(call["duration"]),
-                self._call_status_text(call),
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                item.setData(Qt.UserRole, call["dialog_key"])
-                item.setToolTip(str(value))
-                if column == 5:
-                    item.setBackground(QColor(self._call_status_color(call, palette)))
-                    item.setForeground(QColor(palette["text"]))
-                table.setItem(row, column, item)
-        self._restore_call_selection(table)
-        table.blockSignals(False)
-
-    def _fill_findings_table(self, table, findings):
-        palette = THEMES[self.current_theme]
-        table.blockSignals(True)
-        table.setRowCount(len(findings))
-        for row, finding in enumerate(findings):
-            key = self._finding_key(finding, row)
-            values = [
-                severity_label(self._display_severity(finding)),
-                finding.get("category", "Correlacao"),
-                self._finding_title(finding),
-                finding["source"],
-                finding["destination"],
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                item.setData(Qt.UserRole, key)
-                item.setToolTip(str(value))
-                if column == 0:
-                    item.setBackground(QColor(self._severity_color(self._display_severity(finding), palette)))
-                    item.setForeground(QColor(palette["text"]))
-                table.setItem(row, column, item)
-        self._restore_finding_selection(table)
-        table.blockSignals(False)
-
-    def _fill_incident_table(self, table, findings):
-        palette = THEMES[self.current_theme]
-        table.blockSignals(True)
-        table.setRowCount(len(findings))
-        for row, finding in enumerate(findings):
-            key = self._finding_key(finding, row)
-            values = [
-                severity_label(self._display_severity(finding)),
-                self._finding_title(finding),
-                f"{finding['source']} → {finding['destination']}",
-                finding.get("responsibility", "Em investigacao"),
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setData(Qt.UserRole, key)
-                item.setToolTip(value)
-                if column == 0:
-                    item.setBackground(QColor(self._severity_color(self._display_severity(finding), palette)))
-                    item.setForeground(QColor(palette["text"]))
-                table.setItem(row, column, item)
-        self._restore_finding_selection(table)
-        table.blockSignals(False)
-
-    def _fill_rtp_table(self, table, streams):
-        palette = THEMES[self.current_theme]
-        threshold = self.analysis_settings.rtp_high_jitter_threshold
-        table.blockSignals(True)
-        table.setRowCount(len(streams))
-        for row, stream in enumerate(streams):
-            mos = stream.get("mos")
-            values = [
-                f"{stream['source']} → {stream['destination']}",
-                f"0x{stream['ssrc']:08X}",
-                self._format_stream_codecs(stream),
-                str(stream["packet_count"]),
-                f"{stream['loss_percent']:.2f}% ({stream['lost_packets']})",
-                f"{stream['max_jitter'] * 1000:.1f} ms",
-                f"{mos:.2f}" if mos is not None else "-",
-                self._format_duration(stream.get("duration", 0.0)),
-            ]
-            tones = {
-                4: self._loss_tone(stream["loss_percent"]),
-                5: "danger" if stream["max_jitter"] > threshold * 2 else ("warning" if stream["max_jitter"] > threshold else None),
-                6: self._mos_tone(mos),
-            }
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                item.setData(Qt.UserRole, stream.get("key"))
-                if column >= 3:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                tone = tones.get(column)
-                if tone:
-                    item.setForeground(QColor(palette[tone]))
-                table.setItem(row, column, item)
-        self._restore_stream_selection(table)
-        table.blockSignals(False)
-
-    def _restore_stream_selection(self, table):
-        if self.selected_stream_key is None:
-            return
-        for row in range(table.rowCount()):
-            item = table.item(row, 0)
-            if item and item.data(Qt.UserRole) == self.selected_stream_key:
-                table.selectRow(row)
-                return
 
     def _selected_stream(self, streams):
         if self.selected_stream_key is not None:
@@ -2300,6 +1899,7 @@ class SipperWindow(QMainWindow):
         return sorted(
             findings,
             key=lambda finding: (
+                0 if finding.get("is_root_cause") else 1,
                 SEVERITY_ORDER.get(self._display_severity(finding), 9),
                 -finding.get("confidence", 0.0),
                 finding["type"],
@@ -2351,24 +1951,6 @@ class SipperWindow(QMainWindow):
             return ", ".join(f"PT {payload_type}" for payload_type in payload_types)
         return "Nao identificado"
 
-    def _restore_call_selection(self, table):
-        if self.selected_call_id is None:
-            return
-        for row in range(table.rowCount()):
-            item = table.item(row, 0)
-            if item and item.data(Qt.UserRole) == self.selected_call_id:
-                table.selectRow(row)
-                return
-
-    def _restore_finding_selection(self, table):
-        if self.selected_finding_key is None:
-            return
-        for row in range(table.rowCount()):
-            item = table.item(row, 0)
-            if item and item.data(Qt.UserRole) == self.selected_finding_key:
-                table.selectRow(row)
-                return
-
     def _on_call_selected(self):
         table = self.sender()
         if not isinstance(table, QTableWidget):
@@ -2414,58 +1996,6 @@ class SipperWindow(QMainWindow):
         self._render_diagnostic_detail(finding)
         if finding is not None:
             self.findings_recommendation_text.setPlainText(finding["recommendation"] or "Sem recomendacao.")
-
-    def _open_sip_flow_dialog(self):
-        call = self._selected_call()
-        if call is None or self.last_engine_result is None:
-            self._set_status("Nenhuma chamada SIP selecionada")
-            return
-
-        sip_flows = self.last_engine_result.get("sip_flows", {})
-        flow = sip_flows.get(call["dialog_key"])
-
-        if flow is None:
-            self._set_status("Fluxo SIP nao encontrado para a chamada selecionada")
-            return
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"SIP Flow - {call['call_id']}")
-        dialog.resize(980, 720)
-        layout = QVBoxLayout(dialog)
-
-        ladder = SIPLadderWidget()
-        ladder.set_flow(flow)
-        message_selector = QComboBox()
-        header_viewer = QTextEdit()
-        header_viewer.setReadOnly(True)
-        header_viewer.setFont(_font("body"))
-        header_viewer.setMinimumHeight(250)
-
-        for index, message in enumerate(flow.messages):
-            kind = message.method if message.is_request else f"{message.status_code} {message.reason_phrase or ''}".strip()
-            message_selector.addItem(
-                f"{message.packet_time:.3f} | {kind} | {message.source_ip} -> {message.destination_ip}",
-                index,
-            )
-
-        def show_header(selector_index):
-            message_index = message_selector.itemData(selector_index)
-            if message_index is None:
-                header_viewer.setPlainText("Nenhuma mensagem SIP selecionada.")
-                return
-            message = flow.messages[message_index]
-            header_viewer.setPlainText(message.header_text or message.start_line)
-
-        message_selector.currentIndexChanged.connect(show_header)
-        ladder.message_selected.connect(message_selector.setCurrentIndex)
-        show_header(message_selector.currentIndex())
-        layout.addWidget(ladder, 1)
-        layout.addWidget(QLabel("Clique em uma seta ou selecione a mensagem para ver o cabecalho SIP"))
-        layout.addWidget(message_selector)
-        layout.addWidget(header_viewer, 1)
-
-        self._animate_widget(dialog, 0.0, 1.0, 180)
-        dialog.exec()
 
     def _calculate_capture_duration(self, packets):
         timestamps = [float(packet.time) for packet in packets if hasattr(packet, "time")]
@@ -2529,259 +2059,6 @@ class SipperWindow(QMainWindow):
             self.selected_finding_key = self._finding_key(findings[0], 0)
             return findings[0]
         return None
-
-    def _render_call_text(self, widget, call):
-        if call is None:
-            widget.setPlainText("Nenhuma chamada detectada.")
-            return
-        palette = THEMES[self.current_theme]
-        evidence = call.get("key_evidence_display") or call["key_evidence"] or ["Sem evidencias resumidas."]
-        rtp_metrics = call["rtp_metrics"]
-        loss_observation = packet_loss_observation(rtp_metrics["loss_percent"])
-        jitter_observation_text = jitter_observation(
-            rtp_metrics["average_jitter"],
-            rtp_metrics["max_jitter"],
-        )
-        timings = call.get("signaling_timings", {})
-        quality_metrics = call.get("media_quality_metrics", {})
-        operations = call.get("signaling_operations", {})
-        mos = quality_metrics.get("mos_estimate")
-        mos_text = mos_observation(mos) if mos is not None else "MOS indisponivel: nao houve RTP correlacionado."
-        operation_items = [
-            f"re-INVITE: {operations.get('reinvites', 0)}",
-            f"hold: {operations.get('holds', 0)}",
-            f"resume: {operations.get('resumes', 0)}",
-            f"TRANSFER: {operations.get('transfers', 0)}",
-            f"OPTIONS: {operations.get('options', 0)}",
-        ]
-        direction_lines = [
-            f"{direction}: {metric['packet_count']} pacotes, {metric['loss_percent']:.2f}% de perda, jitter max {metric['max_jitter'] * 1000:.1f} ms"
-            for direction, metric in rtp_metrics.get("directions", {}).items()
-        ]
-        direction_html = "".join(
-            f"<li style='margin-bottom:4px;'>{self._escape_html(line)}</li>" for line in direction_lines
-        ) or "<li>Sem direcoes RTP correlacionadas.</li>"
-        evidence_html = "".join(
-            f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>" for item in evidence
-        )
-        widget.setHtml(
-            f"""
-            <div style="font-family:'Segoe UI'; color:{palette['text']};">
-                <div style="font-size:20px; font-weight:700; margin-bottom:8px;">{self._escape_html(call['call_id'])}</div>
-                <div style="margin-bottom:12px;">
-                    {self._chip_html(state_label(call['signaling_state']), self._signal_color(call['signaling_state'], palette), palette)}
-                    &nbsp;
-                    {self._chip_html(state_label(call['media_state']), self._media_color(call['media_state'], palette), palette)}
-                    &nbsp;
-                    {self._chip_html('Severidade ' + severity_label(call['severity']), self._severity_color(call['severity'], palette), palette)}
-                </div>
-                <div style="margin-bottom:8px;"><b>Origem:</b> {self._escape_html(call['source_ip'])}</div>
-                <div style="margin-bottom:8px;"><b>Destino:</b> {self._escape_html(call['destination_ip'])}</div>
-                <div style="margin-bottom:8px;"><b>Midia negociada:</b> {self._escape_html(state_label(call['media_direction']))}</div>
-                <div style="margin-bottom:8px;"><b>Qualidade de midia:</b> {self._escape_html(state_label(call.get('media_quality', 'unknown')))}</div>
-                <div style="margin-bottom:8px;"><b>Problema principal:</b> {self._escape_html(finding_title(call['primary_issue']) if call['primary_issue'] else 'Nenhum')}</div>
-                <div style="margin-bottom:8px;"><b>Codecs:</b> {self._escape_html(', '.join(call['codec_guesses']) or '-')}</div>
-                <div style="margin-bottom:8px;"><b>Duracao:</b> {self._format_duration(call['duration'])}</div>
-                <div style="margin-bottom:8px;"><b>INVITE para 100/180/200/ACK:</b> {self._format_optional_duration(timings.get('invite_to_trying'))} / {self._format_optional_duration(timings.get('invite_to_ringing'))} / {self._format_optional_duration(timings.get('invite_to_ok'))} / {self._format_optional_duration(timings.get('invite_to_ack'))}</div>
-                <div style="margin-bottom:8px;"><b>Streams RTP:</b> {call['rtp_stream_count']}</div>
-                <div style="margin-bottom:8px;"><b>Pacotes RTP:</b> {rtp_metrics['packet_count']}</div>
-                <div style="margin-bottom:8px;"><b>Perda de pacotes:</b> {rtp_metrics['loss_percent']:.2f}% ({rtp_metrics['lost_packets']})</div>
-                <div style="margin-bottom:8px;"><b>Jitter maximo (RFC 3550):</b> {rtp_metrics['max_jitter'] * 1000:.1f} ms</div>
-                <div style="margin-bottom:8px;"><b>Pior variacao entre pacotes:</b> {rtp_metrics.get('peak_transit_variation', 0.0) * 1000:.1f} ms</div>
-                <div style="margin-bottom:8px;"><b>RTT (RTCP):</b> {self._format_optional_duration(rtp_metrics.get('rtt'))}</div>
-                <div style="margin-bottom:8px;"><b>Pausas por silencio (VAD):</b> {rtp_metrics.get('silence_periods', 0)}</div>
-                <div style="margin-bottom:8px;"><b>Fora de ordem:</b> {rtp_metrics['out_of_order_packets']}</div>
-                <div style="margin-bottom:14px;"><b>SSRC:</b> {self._escape_html(', '.join(str(ssrc) for ssrc in rtp_metrics['ssrcs']) or '-')}</div>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Interpretacao de qualidade</div>
-                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
-                    <div style="margin-bottom:6px;"><b>{self._escape_html(mos_text)}</b></div>
-                    <div style="margin-bottom:6px;">{self._escape_html(loss_observation)}</div>
-                    <div style="margin-bottom:6px;">{self._escape_html(jitter_observation_text)}</div>
-                    <div style="color:{palette['muted']};">{self._escape_html(quality_reference_note())}</div>
-                </div>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Operacoes SIP</div>
-                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
-                    {self._escape_html(' | '.join(operation_items))}
-                </div>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">RTP por direcao</div>
-                <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{direction_html}</ul>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Evidencias</div>
-                <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{evidence_html}</ul>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Acao recomendada</div>
-                <div style="padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
-                    {self._escape_html(call["recommended_action"] or "Sem recomendacao.")}
-                </div>
-            </div>
-            """
-        )
-
-    def _build_sip_flow_html(self, flow):
-        palette = THEMES[self.current_theme]
-        rows = []
-
-        for message in flow.messages:
-            if message.is_request:
-                direction = f"{message.source_ip}:{message.source_port} &#8594; {message.destination_ip}:{message.destination_port}"
-                kind = self._escape_html(message.method or "REQUEST")
-                direction_color = palette["accent"]
-            else:
-                direction = f"{message.destination_ip}:{message.destination_port} &#8592; {message.source_ip}:{message.source_port}"
-                kind = self._escape_html(f"{message.status_code} {message.reason_phrase or ''}".strip())
-                direction_color = palette["info"]
-
-            rows.append(
-                f"""
-                <tr>
-                    <td style="padding:10px 12px; border-bottom:1px solid {palette['border']}; color:{palette['muted']};">
-                        {message.packet_time:.3f}
-                    </td>
-                    <td style="padding:10px 12px; border-bottom:1px solid {palette['border']};">
-                        <span style="background:{direction_color}; color:{palette['text']}; padding:5px 8px; border-radius:10px; font-weight:600;">
-                            {direction}
-                        </span>
-                    </td>
-                    <td style="padding:10px 12px; border-bottom:1px solid {palette['border']}; color:{palette['text']};">
-                        {kind}
-                    </td>
-                    <td style="padding:10px 12px; border-bottom:1px solid {palette['border']}; color:{palette['muted']};">
-                        {self._escape_html(message.start_line)}
-                    </td>
-                </tr>
-                """
-            )
-
-        return (
-            f"""
-            <div style="font-family:'Segoe UI'; color:{palette['text']};">
-                <div style="font-size:22px; font-weight:700; margin-bottom:6px;">{self._escape_html(flow.call_id)}</div>
-                <div style="margin-bottom:16px; color:{palette['muted']};">
-                    {self._escape_html(flow.source_ip)} &#8644; {self._escape_html(flow.destination_ip)}
-                </div>
-                <div style="margin-bottom:16px; padding:12px 14px; border:1px solid {palette['border']}; border-radius:12px; background:{palette['surface']};">
-                    <b>Resumo:</b> INVITE={flow.invites} | RESP={flow.responses} | 2xx={flow.success_responses} | ACK={flow.acknowledgements} | BYE={flow.byes} | CANCEL={flow.cancels}
-                </div>
-                <table style="width:100%; border-collapse:collapse; background:{palette['surface']}; border:1px solid {palette['border']}; border-radius:12px;">
-                    <thead>
-                        <tr>
-                            <th style="text-align:left; padding:10px 12px; border-bottom:1px solid {palette['border']};">Tempo</th>
-                            <th style="text-align:left; padding:10px 12px; border-bottom:1px solid {palette['border']};">Fluxo</th>
-                            <th style="text-align:left; padding:10px 12px; border-bottom:1px solid {palette['border']};">Mensagem</th>
-                            <th style="text-align:left; padding:10px 12px; border-bottom:1px solid {palette['border']};">Start-Line</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {''.join(rows) or f"<tr><td colspan='4' style='padding:14px;'>Sem mensagens SIP.</td></tr>"}
-                    </tbody>
-                </table>
-            </div>
-            """
-        )
-
-    def _render_diagnostic_detail(self, finding):
-        if finding is None:
-            self.diagnostic_detail_text.setPlainText("Selecione um incidente para ver as evidencias.")
-            return
-
-        evidence = finding.get("evidence_display") or finding.get("evidence", [])
-        technical_context = build_finding_evidence_context(self.last_engine_result, finding)
-        references = finding.get("references", [])
-        lines = [
-            f"Falha: {self._finding_title(finding)}",
-            f"Codigo: {finding['type']}",
-            f"Camada: {finding.get('category', 'Correlacao')}",
-            f"De: {finding['source']}",
-            f"Para: {finding['destination']}",
-            f"Possivel responsavel: {finding.get('responsibility', 'Em investigacao')}",
-            f"Confianca da atribuicao: {severity_label(finding.get('responsibility_confidence', 'low'))}",
-            "",
-            "Por que:",
-            finding.get("responsibility_reason", "Sem atribuicao conclusiva."),
-            "",
-            "Evidencias:",
-            *(f"- {item}" for item in evidence[:6]),
-            *(
-                ["", "Analise tecnica:", *technical_context]
-                if technical_context
-                else []
-            ),
-            *(
-                [
-                    "",
-                    "Referencias tecnicas:",
-                    *(
-                        f"- {item['title']}\n"
-                        f"  Aplicacao: {item.get('scope', 'Referencia tecnica do protocolo.')}\n"
-                        f"  Fonte: {item['url']}"
-                        for item in references
-                    ),
-                ]
-                if references
-                else []
-            ),
-            "",
-            "Proxima acao:",
-            finding["recommendation"] or "Investigue o fluxo entre os endpoints.",
-        ]
-        self.diagnostic_detail_text.setPlainText("\n".join(lines))
-
-    def _render_finding_text(self, widget, finding):
-        if finding is None:
-            widget.setPlainText("Nenhum finding selecionado.")
-            return
-        palette = THEMES[self.current_theme]
-        evidence = finding.get("evidence_display") or finding.get("evidence", [])
-        technical_context = build_finding_evidence_context(self.last_engine_result, finding)
-        evidence_html = "".join(
-            f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>"
-            for item in evidence
-        ) or "<li>Sem evidencias adicionais.</li>"
-        technical_context_html = "".join(
-            f"<li style='margin-bottom:4px;'>{self._escape_html(item)}</li>"
-            for item in technical_context
-        ) or "<li>Sem correlacoes adicionais para este finding.</li>"
-        references_html = "".join(
-            f"<li style='list-style:none; margin:0 0 10px 0; padding:10px 12px; "
-            f"border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};'>"
-            f"<div style='font-weight:700; margin-bottom:5px;'>{self._escape_html(item['title'])}</div>"
-            f"<div style='margin-bottom:5px;'><b>Aplicacao:</b> "
-            f"{self._escape_html(item.get('scope', 'Referencia tecnica do protocolo.'))}</div>"
-            f"<div style='color:{palette['muted']};'><b>Fonte:</b> "
-            f"{self._escape_html(item['url'])}</div></li>"
-            for item in finding.get("references", [])
-        ) or "<li>Referencia tecnica nao cadastrada.</li>"
-        widget.setHtml(
-            f"""
-            <div style="font-family:'Segoe UI'; color:{palette['text']};">
-                <div style="font-size:18px; font-weight:700; margin-bottom:2px;">{self._escape_html(self._finding_title(finding))}</div>
-                <div style="color:{palette['muted']}; font-family:Consolas; margin-bottom:8px;">{self._escape_html(finding['type'])}</div>
-                <div style="margin-bottom:12px;">
-                    {self._chip_html(severity_label(self._display_severity(finding)), self._severity_color(self._display_severity(finding), palette), palette)}
-                </div>
-                <div style="margin-bottom:8px;"><b>Origem:</b> {self._escape_html(finding['source'])}</div>
-                <div style="margin-bottom:12px;"><b>Destino:</b> {self._escape_html(finding['destination'])}</div>
-                <div style="margin-bottom:12px;"><b>Camada responsavel:</b> {self._escape_html(finding.get('category', 'Correlacao'))}</div>
-                <div style="margin-bottom:8px;"><b>Possivel responsavel:</b> {self._escape_html(finding.get('responsibility', 'Em investigacao'))}</div>
-                <div style="margin-bottom:12px;"><b>Confianca da atribuicao:</b> {self._escape_html(severity_label(finding.get('responsibility_confidence', 'low')))}</div>
-                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
-                    {self._escape_html(finding.get('responsibility_reason', 'Sem atribuicao conclusiva.'))}
-                </div>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Descricao</div>
-                <div style="margin-bottom:14px; padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
-                    {self._escape_html(finding["description"] or "-")}
-                </div>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Evidencias principais</div>
-                <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{evidence_html}</ul>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Contexto tecnico capturado</div>
-                <ul style="margin-top:0; margin-bottom:14px; padding-left:18px;">{technical_context_html}</ul>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Referencias tecnicas</div>
-                <ul style="margin:0 0 14px 0; padding:0;">{references_html}</ul>
-                <div style="font-size:11pt; font-weight:600; margin-bottom:6px;">Recomendacao</div>
-                <div style="padding:10px 12px; border:1px solid {palette['border']}; border-radius:10px; background:{palette['surface']};">
-                    {self._escape_html(finding["recommendation"] or "-")}
-                </div>
-            </div>
-            """
-        )
 
     def _finding_lines(self, findings, limit):
         return [
@@ -2853,14 +2130,6 @@ class SipperWindow(QMainWindow):
         arrow = "\u25BE" if section["expanded"] else "\u25B8"
         section["header"].setText(f"{arrow}  {title.upper()}")
 
-    def _severity_color(self, severity, palette):
-        return {
-            "high": palette["danger"],
-            "medium": palette["warning"],
-            "low": palette["low"],
-            "info": palette["muted"],
-        }.get(severity, palette["muted"])
-
     def _count_display_severity(self, severity):
         return sum(
             1 for finding in self.last_viewmodel["findings"] if self._display_severity(finding) == severity
@@ -2873,6 +2142,9 @@ class SipperWindow(QMainWindow):
         return finding.get("title") or finding_title(finding["type"])
 
     def _call_status_color(self, call, palette):
+        verdict = call.get("verdict") or {}
+        if verdict.get("status"):
+            return palette.get(VERDICT_TONES.get(verdict["status"], "muted"), palette["muted"])
         if call["severity"] in {"high", "medium"}:
             return self._severity_color(call["severity"], palette)
         if call["signaling_state"] in {"established", "terminated"}:
@@ -2881,51 +2153,16 @@ class SipperWindow(QMainWindow):
 
     def _call_status_text(self, call):
         state = state_label(call["signaling_state"])
+        verdict = call.get("verdict") or {}
+        if verdict.get("status") and verdict["status"] != "ok":
+            cause = verdict.get("root_title")
+            status = verdict_status_label(verdict["status"])
+            if cause and verdict.get("propagated_from"):
+                cause = f"{cause} (perna B)"
+            return f"{status} - {cause}" if cause else f"{state} - {status}"
         if call["severity"] in {"high", "medium"}:
             return f"{state} - {severity_label(call['severity'])}"
         return state
-
-    def _signal_color(self, state, palette):
-        return {
-            "established": palette["success"],
-            "completed": palette["success"],
-            "terminated": palette["success"],
-            "ringing": palette["warning"],
-            "setup_incomplete": palette["warning"],
-            "missing_ack": palette["warning"],
-            "no_response": palette["warning"],
-            "incomplete": palette["warning"],
-            "failed": palette["danger"],
-            "cancelled": palette["danger"],
-            "unknown": palette["muted"],
-        }.get(state, palette["accent"])
-
-    def _media_color(self, state, palette):
-        return {
-            "ok": palette["success"],
-            "media_present": palette["success"],
-            "degraded_media": palette["warning"],
-            "one_way_media": palette["danger"],
-            "no_media": palette["danger"],
-            "inactive_media": palette["muted"],
-        }.get(state, palette["accent"])
-
-    def _chip_html(self, label, color, palette):
-        return (
-            f"<span style=\"background:{color}; color:{palette['text']}; "
-            f"padding:5px 9px; border-radius:10px; font-size:9pt; font-weight:600;\">"
-            f"{self._escape_html(label)}</span>"
-        )
-
-    def _escape_html(self, text):
-        value = str(text)
-        return (
-            value.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-        )
-
 
 def launch_gui(argv=None):
     argv = list(sys.argv if argv is None else argv)

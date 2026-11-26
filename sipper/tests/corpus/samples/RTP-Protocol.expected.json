@@ -1,0 +1,20 @@
+{
+  "pcap": "../../../samples/RTP-Protocol.pcap",
+  "settings": {},
+  "diagnosis": {
+    "status": "ok",
+    "root_type": null,
+    "culprit_ip": null
+  },
+  "calls": {
+    "1907983263271201083544@10.33.6.101": {
+      "status": "ok",
+      "root_type": null,
+      "culprit_ip": null
+    }
+  },
+  "present_findings": [
+    "sip_call_established",
+    "sip_call_terminated"
+  ]
+}

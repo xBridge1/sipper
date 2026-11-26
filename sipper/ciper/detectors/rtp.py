@@ -14,6 +14,86 @@ TIMESTAMP_ANOMALY_HIGH_PERCENT = 5.0
 ONE_WAY_MIN_PACKETS = 10
 
 
+# Silent-audio verdict: at least this many G.711 packets (2 s at 20 ms)...
+SILENT_AUDIO_MIN_PACKETS = 100
+# ...and this share of them carrying digital silence.
+SILENT_AUDIO_SHARE = 0.95
+
+DTMF_EVENT_NAMES = "0123456789*#ABCD"
+
+
+def stream_silence(stream):
+    """(G.711 packets, silent packets) for a stream; (0, 0) for other codecs."""
+    g711 = silent = 0
+    for packet in stream.packets:
+        if packet.silent is None:
+            continue
+        g711 += 1
+        if packet.silent:
+            silent += 1
+    return g711, silent
+
+
+def stream_dtmf_digits(stream):
+    """Digits sent as RFC 4733 events, one per key press (end packets dedup'd)."""
+    digits = []
+    seen = set()
+    auxiliary = getattr(stream, "auxiliary_payload_types", set()) - {13}
+    for packet in stream.packets:
+        if packet.payload_type not in auxiliary or packet.event is None:
+            continue
+        event, end, _duration = packet.event
+        if not end or packet.timestamp in seen:
+            continue
+        seen.add(packet.timestamp)
+        digits.append(DTMF_EVENT_NAMES[event] if event < len(DTMF_EVENT_NAMES) else f"<{event}>")
+    return "".join(digits)
+
+
+def detect_rtp_silent_audio(streams, hold_stream_keys=()):
+    """RTP keeps flowing but the G.711 samples are digital silence: "no audio"
+    complaints that loss and jitter metrics never explain."""
+    findings = []
+    hold_stream_keys = set(hold_stream_keys)
+    for key, stream in streams.items():
+        g711, silent = stream_silence(stream)
+        if g711 < SILENT_AUDIO_MIN_PACKETS or silent < SILENT_AUDIO_SHARE * g711:
+            continue
+        on_hold = (
+            (stream.source_ip, stream.destination_ip, stream.source_port, stream.destination_port, stream.ssrc)
+            in hold_stream_keys
+        )
+        share = silent / g711 * 100
+        findings.append(
+            Finding(
+                type="rtp_silent_audio",
+                severity="low" if on_hold else "high",
+                confidence=0.85,
+                source_ip=stream.source_ip,
+                destination_ip=stream.destination_ip,
+                description=(
+                    f"O RTP de {stream.source_ip} chega normalmente, mas {share:.0f}% dos pacotes G.711 sao "
+                    "silencio digital: o outro lado ouve mudo mesmo sem perda nem jitter."
+                    + (" A chamada estava em espera, o que pode explicar o silencio." if on_hold else "")
+                ),
+                evidence=[
+                    f"SSRC: {stream.ssrc}",
+                    f"G.711 packets: {g711}",
+                    f"Silent packets: {silent} ({share:.1f}%)",
+                    f"Source port: {stream.source_port}",
+                    f"Destination port: {stream.destination_port}",
+                ],
+                recommendation=(
+                    f"O emissor {stream.source_ip} esta gerando silencio: microfone mudo ou desconectado, headset com "
+                    "defeito, transcodificacao quebrada no SBC/gateway ou aplicacao (URA, conferencia) sem audio para "
+                    "tocar. No FreeSWITCH, confira se o canal esta em mute/hold ou se o arquivo de audio existe."
+                ),
+                culprit_ip=stream.source_ip,
+            )
+        )
+    return findings
+
+
 def detect_rtp_packet_loss(streams, high_loss_threshold=2, high_loss_percent=LOSS_HIGH_QUALITY_PERCENT):
     """Report loss per stream, graded by percentage rather than raw count.
 

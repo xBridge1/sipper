@@ -1,0 +1,25 @@
+{
+  "pcap": "../../../samples/teste_sip_rtp_problemas.pcap",
+  "settings": {},
+  "diagnosis": {
+    "status": "degraded",
+    "root_type": "rtp_packet_loss",
+    "culprit_ip": null
+  },
+  "calls": {
+    "a84b4c76e66710@192.168.1.10": {
+      "status": "degraded",
+      "root_type": "rtp_packet_loss",
+      "culprit_ip": null
+    }
+  },
+  "present_findings": [
+    "rtcp_reported_jitter",
+    "rtcp_reported_loss",
+    "rtp_out_of_order",
+    "rtp_packet_loss",
+    "rtp_ssrc_change",
+    "sip_call_established",
+    "sip_call_terminated"
+  ]
+}

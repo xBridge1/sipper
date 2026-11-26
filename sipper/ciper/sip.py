@@ -1,3 +1,4 @@
+from ciper.text import is_ascii_digits
 from dataclasses import dataclass, field
 
 from ciper.packets import _UNSET, ensure_decoded
@@ -41,6 +42,19 @@ class SIPMessage:
     via_branch: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     request_uri: str | None = None
+    # Every value of every header, in order (Via, Record-Route and duplicated
+    # singleton headers keep all occurrences here; ``headers`` keeps the last).
+    header_values: dict[str, list[str]] = field(default_factory=dict)
+    # Byte-level facts that are lost once the message is decoded.
+    invalid_utf8_headers: list[str] = field(default_factory=list)
+    non_ascii_headers: list[str] = field(default_factory=list)
+    control_char_headers: list[str] = field(default_factory=list)
+    invalid_header_names: list[str] = field(default_factory=list)
+    invalid_header_lines: list[str] = field(default_factory=list)
+    bare_lf_lines: int = 0
+    folded_lines: int = 0
+    body_text: str = ""
+    sip_version: str = "SIP/2.0"
 
 
 @dataclass
@@ -147,11 +161,14 @@ def _parse_sip_payload(
     try:
         text = payload.decode("utf-8")
     except UnicodeDecodeError:
-        return None
+        # Legacy PBXs often send Latin-1 display names. Keep the message (it
+        # is exactly the kind of input that breaks downstream systems) and
+        # record which headers carry the invalid bytes.
+        text = payload.decode("latin-1")
 
     header_bytes, body_bytes = _split_sip_payload(payload)
-    header_text = header_bytes.decode("utf-8", errors="ignore")
-    lines = header_text.splitlines()
+    raw_lines = header_bytes.split(b"\n")
+    lines = [_decode_header_line(line) for line in raw_lines]
 
     if not lines:
         return None
@@ -161,17 +178,39 @@ def _parse_sip_payload(
     if not start_line:
         return None
 
+    header_text = "\n".join(line.rstrip("\r") for line in lines)
     headers = {}
+    header_values = {}
     header_count = 0
     max_header_length = 0
     invalid_header_count = 0
     declared_content_length = None
+    invalid_utf8_headers = []
+    non_ascii_headers = []
+    control_char_headers = []
+    invalid_header_names = []
+    invalid_header_lines = []
+    # The final line has no terminator of its own (the blank line was split off).
+    bare_lf_lines = sum(1 for line in raw_lines[:-1] if not line.endswith(b"\r"))
+    if len(raw_lines) == 1:
+        bare_lf_lines = 0
+    folded_lines = 0
 
     previous_header = None
 
-    for raw_line in lines[1:]:
+    for raw_bytes, raw_line in zip(raw_lines[1:], lines[1:]):
+        raw_line = raw_line.rstrip("\r")
         if raw_line.startswith((" ", "\t")) and previous_header is not None:
+            folded_lines += 1
             headers[previous_header] = f"{headers[previous_header]} {raw_line.strip()}"
+            header_values[previous_header][-1] = headers[previous_header]
+            _record_byte_issues(
+                raw_bytes,
+                previous_header,
+                invalid_utf8_headers,
+                non_ascii_headers,
+                control_char_headers,
+            )
             continue
 
         line = raw_line.strip()
@@ -181,6 +220,7 @@ def _parse_sip_payload(
 
         if ":" not in line:
             invalid_header_count += 1
+            invalid_header_lines.append(line[:120])
             previous_header = None
             continue
 
@@ -188,14 +228,25 @@ def _parse_sip_payload(
         header_name = _normalize_header_name(name)
         if not header_name:
             invalid_header_count += 1
+            invalid_header_lines.append(line[:120])
             previous_header = None
             continue
+        if not _is_token(name.strip()):
+            invalid_header_names.append(name.strip()[:60])
         headers[header_name] = value.strip()
+        header_values.setdefault(header_name, []).append(value.strip())
+        _record_byte_issues(
+            raw_bytes,
+            header_name,
+            invalid_utf8_headers,
+            non_ascii_headers,
+            control_char_headers,
+        )
         previous_header = header_name
         header_count += 1
-        max_header_length = max(max_header_length, len(line.encode("utf-8")))
+        max_header_length = max(max_header_length, len(raw_bytes.rstrip(b"\r")))
         if header_name == "content-length":
-            if value.strip().isdigit():
+            if is_ascii_digits(value.strip()):
                 declared_content_length = int(value.strip())
             else:
                 invalid_header_count += 1
@@ -204,7 +255,9 @@ def _parse_sip_payload(
         declared_content_length is not None and declared_content_length != len(body_bytes)
     )
 
-    call_id = headers.get("call-id")
+    # With a (malformed) duplicated Call-ID, the first copy is what most
+    # stacks match on; keep it so the message stays in its dialog.
+    call_id = (header_values.get("call-id") or [None])[0]
 
     if not call_id:
         return None
@@ -214,60 +267,14 @@ def _parse_sip_payload(
     cseq_number = _extract_cseq_number(headers.get("cseq"))
     from_tag = _extract_parameter(headers.get("from"), "tag")
     to_tag = _extract_parameter(headers.get("to"), "tag")
-    via_branch = _extract_parameter(headers.get("via"), "branch")
+    top_via = (header_values.get("via") or [""])[0].split(",", 1)[0]
+    via_branch = _extract_parameter(top_via, "branch")
 
-    if start_line.startswith("SIP/2.0 "):
-        parts = start_line.split(" ", 2)
-
-        if len(parts) < 3 or not parts[1].isdigit():
-            return None
-
-        return SIPMessage(
-            source_ip=source_ip,
-            destination_ip=destination_ip,
-            source_port=source_port,
-            destination_port=destination_port,
-            is_request=False,
-            method=None,
-            status_code=int(parts[1]),
-            reason_phrase=parts[2],
-            call_id=call_id,
-            start_line=start_line,
-            header_count=header_count,
-            max_header_length=max_header_length,
-            is_fragmented=is_fragmented,
-            packet_time=packet_time,
-            header_size=len(header_bytes),
-            header_text=header_text,
-            message_size=len(payload),
-            transport=transport,
-            tcp_segmented=tcp_segmented,
-            invalid_header_count=invalid_header_count,
-            content_length_mismatch=content_length_mismatch,
-            sdp_media=sdp_media,
-            cseq_method=cseq_method,
-            cseq_number=cseq_number,
-            from_tag=from_tag,
-            to_tag=to_tag,
-            contact=headers.get("contact"),
-            via_branch=via_branch,
-            headers=dict(headers),
-        )
-
-    parts = start_line.split(" ", 2)
-
-    if len(parts) < 3 or not parts[2].startswith("SIP/2.0"):
-        return None
-
-    return SIPMessage(
+    common = dict(
         source_ip=source_ip,
         destination_ip=destination_ip,
         source_port=source_port,
         destination_port=destination_port,
-        is_request=True,
-        method=parts[0],
-        status_code=None,
-        reason_phrase=None,
         call_id=call_id,
         start_line=start_line,
         header_count=header_count,
@@ -289,7 +296,48 @@ def _parse_sip_payload(
         contact=headers.get("contact"),
         via_branch=via_branch,
         headers=dict(headers),
-        request_uri=parts[1],
+        header_values=header_values,
+        invalid_utf8_headers=invalid_utf8_headers,
+        non_ascii_headers=non_ascii_headers,
+        control_char_headers=control_char_headers,
+        invalid_header_names=invalid_header_names,
+        invalid_header_lines=invalid_header_lines,
+        bare_lf_lines=bare_lf_lines,
+        folded_lines=folded_lines,
+        body_text=body_bytes[:8192].decode("utf-8", errors="replace") if body_bytes else "",
+    )
+
+    if start_line.upper().startswith("SIP/"):
+        parts = start_line.split(None, 2)
+
+        if len(parts) < 2 or not is_ascii_digits(parts[1]):
+            return None
+
+        return SIPMessage(
+            is_request=False,
+            method=None,
+            status_code=int(parts[1]),
+            reason_phrase=parts[2] if len(parts) > 2 else "",
+            sip_version=parts[0],
+            **common,
+        )
+
+    # Method SP Request-URI SP SIP-Version. A Request-URI with embedded
+    # whitespace is invalid, but the message is still kept so it can be
+    # reported instead of silently disappearing from the analysis.
+    parts = start_line.split()
+
+    if len(parts) < 3 or not parts[-1].upper().startswith("SIP/"):
+        return None
+
+    return SIPMessage(
+        is_request=True,
+        method=parts[0],
+        status_code=None,
+        reason_phrase=None,
+        request_uri=" ".join(parts[1:-1]),
+        sip_version=parts[-1],
+        **common,
     )
 
 
@@ -379,7 +427,7 @@ def _pop_complete_sip_message(state):
 
     for line in header_text.splitlines()[1:]:
         name, separator, value = line.partition(":")
-        if separator and _normalize_header_name(name) == "content-length" and value.strip().isdigit():
+        if separator and _normalize_header_name(name) == "content-length" and is_ascii_digits(value.strip()):
             content_length = int(value.strip())
             break
 
@@ -614,11 +662,11 @@ def _parse_sdp_media(text):
                 continue
 
             port_value = parts[1].split("/", 1)[0]
-            if not port_value.isdigit() or not 0 <= int(port_value) <= 65535:
+            if not is_ascii_digits(port_value) or not 0 <= int(port_value) <= 65535:
                 current_media = None
                 continue
 
-            payload_types = [int(value) for value in parts[3:] if value.isdigit()]
+            payload_types = [int(value) for value in parts[3:] if is_ascii_digits(value)]
             current_media = SDPMediaDescription(
                 media_type=parts[0],
                 port=int(port_value),
@@ -639,17 +687,17 @@ def _parse_sdp_media(text):
         if line.startswith("a=rtpmap:") and current_media is not None:
             value = line[len("a=rtpmap:"):]
             parts = value.split(None, 1)
-            if len(parts) == 2 and parts[0].isdigit():
+            if len(parts) == 2 and is_ascii_digits(parts[0]):
                 payload_type = int(parts[0])
                 encoding_parts = parts[1].split("/")
                 current_media.codecs[payload_type] = encoding_parts[0]
-                if len(encoding_parts) >= 2 and encoding_parts[1].isdigit():
+                if len(encoding_parts) >= 2 and is_ascii_digits(encoding_parts[1]):
                     current_media.clock_rates[payload_type] = int(encoding_parts[1])
             continue
 
         if line.startswith("a=rtcp:") and current_media is not None:
             value = line[len("a=rtcp:"):].split(None, 1)[0]
-            if value.isdigit():
+            if is_ascii_digits(value):
                 current_media.rtcp_port = int(value)
             continue
 
@@ -659,7 +707,7 @@ def _parse_sdp_media(text):
 
         if line.startswith("a=ptime:") and current_media is not None:
             value = line[len("a=ptime:"):].strip()
-            if value.isdigit() and 0 < int(value) <= 1000:
+            if is_ascii_digits(value) and 0 < int(value) <= 1000:
                 current_media.ptime = int(value)
             continue
 
@@ -675,6 +723,39 @@ def _parse_sdp_media(text):
     return media_descriptions
 
 
+_TOKEN_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.!%*_+`'~"
+)
+
+
+def _is_token(value):
+    """RFC 3261 token: header names may only use these characters."""
+    return bool(value) and all(character in _TOKEN_CHARACTERS for character in value)
+
+
+def _decode_header_line(raw_line):
+    try:
+        return raw_line.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_line.decode("latin-1")
+
+
+def _record_byte_issues(raw_line, header_name, invalid_utf8, non_ascii, control_chars):
+    line = raw_line.rstrip(b"\r")
+    if any(byte < 0x20 and byte != 0x09 or byte == 0x7F for byte in line):
+        if header_name not in control_chars:
+            control_chars.append(header_name)
+    if not line.isascii():
+        try:
+            line.decode("utf-8")
+        except UnicodeDecodeError:
+            if header_name not in invalid_utf8:
+                invalid_utf8.append(header_name)
+        else:
+            if header_name not in non_ascii:
+                non_ascii.append(header_name)
+
+
 def _normalize_header_name(name):
     compact_names = {
         "i": "call-id",
@@ -684,6 +765,14 @@ def _normalize_header_name(name):
         "m": "contact",
         "l": "content-length",
         "c": "content-type",
+        "e": "content-encoding",
+        "k": "supported",
+        "s": "subject",
+        "r": "refer-to",
+        "b": "referred-by",
+        "o": "event",
+        "u": "allow-events",
+        "x": "session-expires",
     }
     normalized = name.strip().lower()
     return compact_names.get(normalized, normalized)
@@ -714,7 +803,7 @@ def _extract_cseq_number(value):
         return None
 
     number = value.split(None, 1)[0]
-    return int(number) if number.isdigit() else None
+    return int(number) if is_ascii_digits(number) else None
 
 
 def _invite_transaction_key(message):

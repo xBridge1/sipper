@@ -10,3 +10,4 @@ build/
 build-assets/
 *.spec
 dist-installer/
+.hypothesis/

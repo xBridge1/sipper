@@ -18,6 +18,17 @@ from ciper.settings import AnalysisSettings
 from ciper.analysis_control import raise_if_cancelled
 from ciper.detectors.fragmentation import detect_ip_fragmentation
 from ciper.detectors.freeswitch import detect_freeswitch_compatibility
+from ciper.detectors.sip_headers import detect_sip_header_hygiene
+from ciper.detectors.sip_negotiation import (
+    detect_freeswitch_profile_mismatch,
+    detect_sdp_offer_answer,
+    detect_sip_register_issues,
+    detect_sip_signaling_nat,
+    detect_sip_tls_signaling,
+)
+from ciper.legs import link_call_legs
+from ciper.q850 import message_q850
+from ciper.diagnosis import EndpointNamer, build_capture_diagnosis, build_verdict, detect_capture_point
 from ciper.detectors.udp import detect_udp_burst_no_response, detect_udp_no_response
 from ciper.findings import Finding
 from ciper.references import attach_references
@@ -38,6 +49,7 @@ from ciper.detectors.tcp import (
     detect_tcp_resets,
 )
 from ciper.detectors.sip import (
+    detect_sip_abnormal_hangup,
     detect_sip_call_established,
     detect_sip_call_cancelled,
     detect_sip_call_terminated,
@@ -58,6 +70,9 @@ from ciper.detectors.sip import (
 )
 from ciper.detectors.rtp import (
     detect_rtp_high_jitter,
+    detect_rtp_silent_audio,
+    stream_dtmf_digits,
+    stream_silence,
     detect_rtp_one_way_audio,
     detect_rtp_out_of_order,
     detect_rtp_packet_loss,
@@ -127,11 +142,19 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     icmp_packets = []
     fragmented_packets = []
     packet_count = 0
+    capture_start = None
+    capture_end = None
     is_cancelled = cancel_event.is_set if cancel_event is not None else None
 
     for packet in packet_source():
         packet = ensure_decoded(packet)
         packet_count += 1
+        packet_time = packet.time
+        if packet_time is not None:
+            if capture_start is None or packet_time < capture_start:
+                capture_start = packet_time
+            if capture_end is None or packet_time > capture_end:
+                capture_end = packet_time
         if is_cancelled is not None and is_cancelled():
             raise_if_cancelled(cancel_event)
         if packet_observer is not None:
@@ -192,10 +215,18 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_sip_call_established(sip_flows))
     findings.extend(detect_sip_call_cancelled(sip_flows))
     findings.extend(detect_sip_call_terminated(sip_flows))
+    findings.extend(detect_sip_abnormal_hangup(sip_flows))
     findings.extend(detect_sip_error_responses(sip_flows))
-    findings.extend(detect_sip_invite_no_response(sip_flows))
+    findings.extend(detect_sip_invite_no_response(sip_flows, capture_end))
     findings.extend(detect_sip_large_headers(sip_flows))
     findings.extend(detect_sip_header_validation_errors(sip_flows))
+    findings.extend(
+        detect_sip_header_hygiene(
+            sip_flows,
+            freeswitch_profile=settings.target_platform == "freeswitch",
+            target_ips=settings.target_platform_ips if settings.target_platform == "freeswitch" else "",
+        )
+    )
     findings.extend(detect_sip_header_fragmentation_risk(sip_flows))
     findings.extend(detect_sip_ok_without_ack(sip_flows))
     findings.extend(detect_sip_register_failures(sip_flows))
@@ -206,9 +237,26 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_sip_retransmissions(sip_flows))
     findings.extend(detect_sip_slow_call_setup(sip_flows))
     findings.extend(detect_sip_sdp_private_address(sip_flows))
+    findings.extend(detect_sdp_offer_answer(sip_flows))
+    findings.extend(detect_sip_signaling_nat(sip_flows))
+    findings.extend(detect_sip_register_issues(sip_flows))
+    findings.extend(detect_sip_tls_signaling(tls_flows, sip_flows))
     if settings.target_platform == "freeswitch":
         findings.extend(
-            detect_freeswitch_compatibility(sip_flows, settings.target_platform_ips)
+            detect_freeswitch_compatibility(
+                sip_flows,
+                settings.target_platform_ips,
+                settings.ignored_custom_headers,
+                settings.trusted_peer_ips,
+            )
+        )
+        platform = EndpointNamer(settings.target_platform_ips)
+        findings.extend(
+            detect_freeswitch_profile_mismatch(
+                sip_flows,
+                settings,
+                lambda address: not platform.targets or platform.is_platform(address),
+            )
         )
     hold_stream_keys, one_way_expected_keys = _get_negotiated_media_exceptions(sip_flows, rtp_streams)
     findings.extend(
@@ -225,6 +273,7 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(detect_rtp_payload_type_change(rtp_streams))
     findings.extend(detect_rtp_ssrc_change(rtp_streams))
     findings.extend(detect_rtp_one_way_audio(rtp_streams, one_way_expected_keys))
+    findings.extend(detect_rtp_silent_audio(rtp_streams, hold_stream_keys))
     findings.extend(detect_rtcp_reported_loss(rtcp_reports, settings.rtp_loss_high_percent))
     findings.extend(detect_rtcp_reported_jitter(rtcp_reports, settings.rtp_high_jitter_threshold))
     findings.extend(detect_rtcp_high_rtt(rtcp_reports))
@@ -241,7 +290,16 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
     findings.extend(correlate_findings(findings, sip_flows, rtp_streams))
     attach_references(findings)
     findings = prioritize_findings(findings)
-    call_summaries = build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports)
+    platform_ips = settings.target_platform_ips if settings.target_platform == "freeswitch" else ""
+    capture_ip = (settings.capture_point_ip or "").strip() or None
+    capture_auto = False
+    if capture_ip is None:
+        capture_ip = detect_capture_point(sip_flows)
+        capture_auto = capture_ip is not None
+    namer = EndpointNamer(platform_ips, capture_ip=capture_ip, capture_auto=capture_auto)
+    call_summaries = build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports, namer=namer)
+    link_call_legs(sip_flows, call_summaries, namer)
+    diagnosis = build_capture_diagnosis(call_summaries, findings, platform_ips, namer=namer)
     report(ANALYSIS_STAGES[4], 1.0)
 
     return {
@@ -255,12 +313,16 @@ def _analyze_pcap_sources(packet_source, settings=None, cancel_event=None, packe
         "tls_flows": tls_flows,
         "findings": findings,
         "call_summaries": call_summaries,
+        "diagnosis": diagnosis,
+        "capture_point": {"ip": capture_ip, "auto": capture_auto},
         "analysis_profile": {
             "target_platform": settings.target_platform,
             "target_platform_ips": settings.target_platform_ips,
         },
         "analysis_stats": {
             "packet_count": packet_count,
+            "capture_start": float(capture_start) if capture_start is not None else None,
+            "capture_end": float(capture_end) if capture_end is not None else None,
             "tcp_packet_count": len(tcp_packets),
             "udp_packet_count": len(udp_packets),
             "icmp_packet_count": len(icmp_packets),
@@ -471,8 +533,9 @@ def prioritize_findings(findings):
     return prioritized
 
 
-def build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports=None):
+def build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports=None, namer=None):
     summaries = []
+    namer = namer or EndpointNamer()
 
     for flow in sip_flows.values():
         related_streams = _get_related_rtp_streams(flow, rtp_streams)
@@ -512,6 +575,8 @@ def build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports=None):
                 "signaling_timeline": _get_signaling_timeline(flow),
                 "signaling_timings": _get_signaling_timings(flow),
                 "signaling_operations": _get_signaling_operations(flow),
+                "hangup": _get_hangup(flow),
+                "dtmf": _get_dtmf(flow, related_streams),
                 "finding_types": [finding.type for finding in related_findings],
                 "severity": _get_summary_severity(related_findings),
                 "primary_issue": _get_primary_issue(related_findings),
@@ -520,6 +585,13 @@ def build_call_summaries(sip_flows, rtp_streams, findings, rtcp_reports=None):
                 "recommended_action": _get_recommended_action(related_findings),
             }
         )
+        verdict = build_verdict(summaries[-1], related_findings, namer)
+        summaries[-1]["verdict"] = verdict
+        if verdict.get("root_type") and verdict["status"] != "ok":
+            summaries[-1]["primary_issue"] = verdict["root_type"]
+            summaries[-1]["recommended_action"] = (
+                verdict["actions"][0] if verdict["actions"] else summaries[-1]["recommended_action"]
+            )
 
     return summaries
 
@@ -678,6 +750,59 @@ def _get_media_negotiation_state(flow):
         return "unidirectional"
 
     return "bidirectional"
+
+
+def _get_dtmf(flow, related_streams):
+    """DTMF seen in the call: RFC 4733 events per direction and SIP INFO."""
+    by_direction = {}
+    for stream in related_streams:
+        digits = stream_dtmf_digits(stream)
+        if digits:
+            key = f"{stream.source_ip} -> {stream.destination_ip}"
+            by_direction[key] = by_direction.get(key, "") + digits
+    info_digits = ""
+    for message in flow.messages:
+        if message.is_request and message.method == "INFO" and "dtmf" in message.headers.get("content-type", "").lower():
+            for line in message.body_text.splitlines():
+                name, _sep, value = line.partition("=")
+                if name.strip().lower() == "signal" and value.strip():
+                    info_digits += value.strip()[0]
+    silent_share = None
+    g711 = silent = 0
+    for stream in related_streams:
+        stream_g711, stream_silent = stream_silence(stream)
+        g711 += stream_g711
+        silent += stream_silent
+    if g711:
+        silent_share = silent / g711 * 100
+    return {"rfc4733": by_direction, "sip_info": info_digits, "silent_percent": silent_share}
+
+
+def _get_hangup(flow):
+    """Who ended the call, when, and with which Q.850 cause."""
+    bye = next((message for message in flow.messages if message.is_request and message.method == "BYE"), None)
+    if bye is None:
+        cancel = next((message for message in flow.messages if message.is_request and message.method == "CANCEL"), None)
+        if cancel is None:
+            return None
+        bye = cancel
+    answered = next(
+        (
+            message.packet_time
+            for message in flow.messages
+            if not message.is_request and message.status_code and 200 <= message.status_code < 300
+            and message.cseq_method in {None, "INVITE"}
+        ),
+        None,
+    )
+    cause, text = message_q850(bye)
+    return {
+        "method": bye.method,
+        "by": bye.source_ip,
+        "side": "chamador" if bye.source_ip == flow.source_ip else "destino",
+        "after_answer": (bye.packet_time - answered) if answered is not None and bye.method == "BYE" else None,
+        "q850": f"{cause.cause} - {cause.meaning}" + (f" ({text})" if text else "") if cause else None,
+    }
 
 
 def _get_signaling_operations(flow):
@@ -990,6 +1115,9 @@ def _get_media_state(flow, related_streams, related_findings):
         }
     ):
         return "degraded_media"
+
+    if "rtp_silent_audio" in finding_types:
+        return "silent_media"
 
     return "media_present"
 

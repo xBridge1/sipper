@@ -46,6 +46,39 @@ RTP_CLOCK_RATES = {
 }
 RTP_DEFAULT_CLOCK_RATE = 8000
 
+
+def _ulaw_to_linear(code):
+    code = ~code & 0xFF
+    sign = code & 0x80
+    exponent = (code >> 4) & 0x07
+    mantissa = code & 0x0F
+    magnitude = ((mantissa << 3) + 0x84) << exponent
+    magnitude -= 0x84
+    return -magnitude if sign else magnitude
+
+
+def _alaw_to_linear(code):
+    code ^= 0x55
+    sign = code & 0x80
+    exponent = (code >> 4) & 0x07
+    mantissa = code & 0x0F
+    if exponent == 0:
+        magnitude = (mantissa << 4) + 8
+    else:
+        magnitude = ((mantissa << 4) + 0x108) << (exponent - 1)
+    return magnitude if sign else -magnitude
+
+
+# A G.711 sample counts as "quiet" below about -50 dBFS (|x| < 100 of 32768).
+# The tables map each code byte to 1 (quiet) or 0, so a payload's quiet share
+# is computed with bytes.translate/count at C speed.
+G711_QUIET_LEVEL = 100
+_ULAW_QUIET = bytes(1 if abs(_ulaw_to_linear(code)) < G711_QUIET_LEVEL else 0 for code in range(256))
+_ALAW_QUIET = bytes(1 if abs(_alaw_to_linear(code)) < G711_QUIET_LEVEL else 0 for code in range(256))
+G711_QUIET_TABLES = {0: _ULAW_QUIET, 8: _ALAW_QUIET}
+# A packet is silent when nearly all of its samples are quiet.
+G711_SILENT_PACKET_SHARE = 0.98
+
 # Payloads that are not continuous audio: comfort noise (RFC 3389) and named
 # telephone events / DTMF (RFC 4733). They must not count as codec changes,
 # timestamp anomalies or jitter samples.
@@ -75,6 +108,10 @@ class RTPPacket:
     marker: int
     payload_length: int
     packet_time: float
+    # G.711 only: True when the payload is digital silence.
+    silent: bool | None = None
+    # RFC 4733 telephone-event body (event, end bit, duration) for 4-byte payloads.
+    event: tuple[int, bool, int] | None = None
 
 
 @dataclass
@@ -232,7 +269,26 @@ def _parse_rtp(packet):
         marker=(payload[1] >> 7) & 0x01,
         payload_length=len(payload) - header_length - padding_length,
         packet_time=packet.time,
+        silent=_g711_silent(payload_type, payload, header_length, padding_length),
+        event=_telephone_event(payload, header_length, padding_length),
     )
+
+
+def _g711_silent(payload_type, payload, header_length, padding_length):
+    table = G711_QUIET_TABLES.get(payload_type)
+    if table is None:
+        return None
+    body = payload[header_length:len(payload) - padding_length]
+    if len(body) < 40:
+        return None
+    return body.translate(table).count(1) >= G711_SILENT_PACKET_SHARE * len(body)
+
+
+def _telephone_event(payload, header_length, padding_length):
+    body = payload[header_length:len(payload) - padding_length]
+    if len(body) != TELEPHONE_EVENT_PAYLOAD_LENGTH:
+        return None
+    return body[0], bool(body[1] & 0x80), (body[2] << 8) | body[3]
 
 
 def _is_rtcp_packet(payload):

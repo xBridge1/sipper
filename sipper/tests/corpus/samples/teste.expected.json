@@ -1,0 +1,19 @@
+{
+  "pcap": "../../../samples/teste.pcap",
+  "settings": {},
+  "diagnosis": {
+    "status": "fail",
+    "root_type": "icmp_destination_unreachable",
+    "culprit_ip": "192.168.1.50"
+  },
+  "calls": {},
+  "present_findings": [
+    "icmp_destination_unreachable",
+    "ip_fragment_incomplete",
+    "tcp_reset",
+    "tcp_retransmission",
+    "tcp_syn_failure",
+    "tls_malformed_record",
+    "udp_no_response"
+  ]
+}
