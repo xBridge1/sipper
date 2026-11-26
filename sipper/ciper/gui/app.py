@@ -455,7 +455,7 @@ class SipperWindow(HtmlRenderingMixin, TablesMixin, SettingsPageMixin, Diagnosti
 
         self.summary_verdict = VerdictBanner(compact=True)
         self.summary_verdict.setToolTip("Clique para abrir o diagnostico completo")
-        self.summary_verdict.mousePressEvent = lambda _event: self._set_page("Diagnostico")
+        self.summary_verdict.clicked.connect(self._open_diagnostic_page)
         self.summary_verdict.setCursor(Qt.PointingHandCursor)
 
         layout.setRowStretch(0, 0)
@@ -1052,6 +1052,9 @@ class SipperWindow(HtmlRenderingMixin, TablesMixin, SettingsPageMixin, Diagnosti
             return
 
         self._set_status(f"Relatorio exportado: {file_path}")
+
+    def _open_diagnostic_page(self):
+        self._set_page("Diagnostico")
 
     def _set_page(self, name):
         page = self.page_widgets[name]

@@ -572,6 +572,8 @@ class VerdictBanner(QFrame):
     for the summary page; the diagnostic page shows the full reasoning.
     """
 
+    clicked = Signal()
+
     def __init__(self, compact=False):
         super().__init__()
         self.compact = compact
@@ -643,6 +645,11 @@ class VerdictBanner(QFrame):
         self.stats_label.setWordWrap(True)
         layout.addWidget(self.stats_label)
         self.verdict = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
     def set_empty(self, text):
         self.verdict = None
