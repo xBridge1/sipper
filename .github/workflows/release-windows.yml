@@ -37,13 +37,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          .\.venv\Scripts\python.exe -m pytest -rfE --tb=short -p no:cacheprovider 2>&1 | Tee-Object -FilePath pytest.log
+          # Native stderr (e.g. scapy warnings) must not abort the step.
+          $ErrorActionPreference = 'Continue'
+          .\.venv\Scripts\python.exe -m pytest -rfE --tb=short -p no:cacheprovider *> pytest.log
           $code = $LASTEXITCODE
+          Get-Content pytest.log
           if ($code -ne 0) {
             # Job logs need a login; annotations are public, so failures stay visible.
-            Select-String -Path pytest.log -Pattern '^(FAILED|ERROR) |^E   ' |
-              Select-Object -First 40 |
-              ForEach-Object { Write-Output "::error title=pytest::$($_.Line)" }
+            $lines = Select-String -Path pytest.log -Pattern '^(FAILED|ERROR) |^E   ' | Select-Object -First 40
+            if (-not $lines) { $lines = Get-Content pytest.log -Tail 25 | ForEach-Object { [pscustomobject]@{ Line = $_ } } }
+            $lines | ForEach-Object { Write-Output "::error title=pytest::$($_.Line)" }
             exit $code
           }
 
