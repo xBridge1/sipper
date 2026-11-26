@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
 [![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-304%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-320%20passing-brightgreen)
 
 ![SIPPER](logo/splash.png)
 
@@ -13,12 +13,12 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 ## Download
 
-Versao atual: **SIPPER 1.4.0**.
+Versao atual: **SIPPER 1.5.0**.
 
-- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-Setup-1.4.0.exe)
-- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-portable-1.4.0.zip)
-- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-Setup-1.4.0.exe.sha256)
-- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.4.0)
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.5.0/SIPPER-Setup-1.5.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.5.0/SIPPER-portable-1.5.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.5.0/SIPPER-Setup-1.5.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.5.0)
 
 ## Destaques
 
@@ -90,6 +90,7 @@ Versao atual: **SIPPER 1.4.0**.
 
 - Perfil opcional ativado em **Configuracoes**, com filtro por IP ou rede do servidor monitorado.
 - Risco de oferta inicial `sendonly`, `recvonly`, `inactive` ou com porta de audio desativada.
+- **Hold da operadora no meio da chamada** (re-INVITE `sendonly`/`inactive`/`c=0.0.0.0`) alarmado como risco para o `mod_callcenter` (chamadas cruzadas, audio mudo), com duracao do hold, resposta do FreeSWITCH e se a chamada terminou em espera.
 - Identidade `anonymous` correlacionada com `P-Asserted-Identity`, `P-Preferred-Identity`, `Remote-Party-ID` e `Privacy` sem equiparar identidade preferida a identidade afirmada.
 - Mapeamento de Request-URI para `destination_number` e de `To` para `sip_to_user`, com alerta de reescrita divergente por operadora ou SBC.
 - Validacao de `Session-Expires` e `Min-SE`, negociacao DTMF por `telephone-event` ou SIP `INFO` e endereco RTP usado em `remote_media_ip`.
@@ -172,7 +173,7 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-A suite possui **304 testes automatizados**, incluindo um corpus de regressao de vereditos (`tests/corpus/`, com instrucoes para adicionar capturas reais) e fuzzing dos parsers com Hypothesis.
+A suite possui **320 testes automatizados**, incluindo um corpus de regressao de vereditos (`tests/corpus/`, com instrucoes para adicionar capturas reais) e fuzzing dos parsers com Hypothesis.
 
 Para medir desempenho, gere uma captura sintetica grande e analise-a:
 
@@ -189,10 +190,10 @@ O projeto inclui uma cadeia de distribuicao para Windows com PyInstaller e Inno 
 2. Ative o ambiente virtual e execute:
 
 ```powershell
-.\packaging\build.ps1 -Version 1.4.0
+.\packaging\build.ps1 -Version 1.5.0
 ```
 
-O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.4.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.4.0.exe.sha256`.
+O executavel de teste sera criado em `dist\SIPPER\SIPPER.exe`, o instalador final em `dist-installer\SIPPER-Setup-1.5.0.exe` e seu checksum em `dist-installer\SIPPER-Setup-1.5.0.exe.sha256`.
 
 Para montar apenas o executavel, sem exigir o Inno Setup:
 
@@ -205,8 +206,8 @@ Para montar apenas o executavel, sem exigir o Inno Setup:
 Depois de enviar o commit para o GitHub, uma tag com prefixo `v` gera automaticamente a release Windows. O workflow na raiz do repositorio (`.github/workflows/release-windows.yml`) executa os testes e publica o instalador `SIPPER-Setup-<versao>.exe`, seu checksum `.exe.sha256` e o pacote portatil `.zip`.
 
 ```powershell
-git tag v1.4.0
-git push origin v1.4.0
+git tag v1.5.0
+git push origin v1.5.0
 ```
 
 O acompanhamento fica na aba **Actions** do repositorio. Quando o workflow terminar, os arquivos estarao na aba **Releases**.

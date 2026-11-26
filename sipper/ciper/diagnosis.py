@@ -88,6 +88,7 @@ CAUSE_RANK = {
     "rtcp_high_rtt": 44,
     "sip_retransmission": 50,
     "freeswitch_callcenter_input_risk": 50,
+    "freeswitch_callcenter_midcall_hold": 60,
     "freeswitch_session_timer_risk": 48,
     "freeswitch_dtmf_negotiation_risk": 45,
     "sip_header_fragmentation_risk": 45,

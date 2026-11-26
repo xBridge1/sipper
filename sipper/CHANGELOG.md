@@ -2,6 +2,20 @@
 
 Todas as mudancas relevantes do SIPPER sao registradas neste arquivo.
 
+## [1.5.0] - 2026-11-26
+
+### Added
+
+- Perfil FreeSWITCH: novo finding `freeswitch_callcenter_midcall_hold` para re-INVITE da operadora que coloca a chamada em espera no meio da ligacao (`a=sendonly`, `a=inactive`, `a=recvonly`, porta 0 ou `c=0.0.0.0`). No `mod_callcenter` esse hold ja causou chamadas cruzadas; a evidencia traz o CSeq, o tipo de hold, a resposta do FreeSWITCH, a duracao e se a chamada terminou ainda em espera. Hold feito pelo proprio FreeSWITCH, hold recusado e chamada que ja comeca em espera nao geram o alerta.
+
+### Fixed
+
+- Desafio de autenticacao `401`/`407` seguido de nova tentativa com credenciais era alarmado como chamada recusada e contado como uma chamada a mais. O desafio agora fica no mesmo fluxo da chamada e e tratado como negociacao; `401`/`407` repetido apos enviar credenciais (senha errada) ou sem nova tentativa continua sendo falha.
+- A nova tentativa autenticada apos `401`/`407` era contada como re-INVITE.
+- `491 Request Pending` em re-INVITE de chamada ja estabelecida (glare) era alarmado como recusa; agora e tratado como negociacao.
+- Re-INVITE de hold ou retomada recusado (`491`, `488`...) era contado como hold/retomada e podia justificar indevidamente gaps de RTP.
+- Transacoes INVITE eram identificadas so pelo numero do CSeq; um re-INVITE de cada lado com o mesmo numero fazia um deles ser tratado como retransmissao.
+
 ## [1.4.0] - 2026-11-25
 
 ### Added

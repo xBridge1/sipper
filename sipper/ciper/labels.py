@@ -118,6 +118,7 @@ FINDING_TITLES = {
     # FreeSWITCH
     "freeswitch_anonymous_caller_identity": "Chamador anonimo (FreeSWITCH)",
     "freeswitch_callcenter_input_risk": "Risco no mod_callcenter",
+    "freeswitch_callcenter_midcall_hold": "Hold no meio da chamada (mod_callcenter)",
     "freeswitch_custom_header_input": "Header SIP personalizado (FreeSWITCH)",
     "freeswitch_dtmf_negotiation_risk": "Negociacao DTMF arriscada",
     "freeswitch_inactive_initial_offer": "Oferta SDP inativa",

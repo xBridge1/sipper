@@ -2,6 +2,7 @@ from ciper.text import is_ascii_digits
 from ipaddress import ip_address, ip_network
 
 from ciper.findings import Finding
+from ciper.sip import is_auth_retry
 
 
 def detect_freeswitch_compatibility(flows, target_ips="", ignored_headers="", trusted_peers=""):
@@ -76,6 +77,8 @@ def detect_freeswitch_compatibility(flows, target_ips="", ignored_headers="", tr
         custom_headers = sorted(name for name in headers if name.startswith("x-") and name not in ignored)
         if custom_headers and not trusted:
             findings.append(_custom_header_input(flow, invite, custom_headers))
+
+        findings.extend(_midcall_hold_risks(flow, invite))
 
     return findings
 
@@ -470,5 +473,154 @@ def _custom_header_input(flow, invite, custom_headers):
         ],
         recommendation=(
             "Trate headers SIP personalizados como entrada nao confiavel. Valide os valores antes de usa-los em roteamento ou modulos e desabilite sip_copy_custom_headers quando a propagacao para a perna B nao for necessaria."
+        ),
+    )
+
+
+def _is_hold_media(media):
+    return (
+        media.port == 0
+        or media.direction in {"sendonly", "recvonly", "inactive"}
+        or _address_is_unspecified(media.connection_address)
+    )
+
+
+def _later_invites(flow, initial):
+    """Distinct INVITE transactions after the initial one, in time order.
+
+    Each side of a dialog keeps its own CSeq counter, so a transaction is
+    identified by the sender together with the CSeq number."""
+    seen = {(initial.source_ip, initial.cseq_number)}
+    later = []
+    for message in sorted(flow.messages, key=lambda item: item.packet_time):
+        if not (message.is_request and message.method == "INVITE") or is_auth_retry(flow, message):
+            continue
+        key = (message.source_ip, message.cseq_number)
+        if key in seen or message.packet_time < initial.packet_time:
+            continue
+        seen.add(key)
+        later.append(message)
+    return later
+
+
+def _final_responses(flow, request):
+    return [
+        message
+        for message in flow.messages
+        if not message.is_request
+        and message.cseq_method == "INVITE"
+        and message.cseq_number == request.cseq_number
+        and message.source_ip == request.destination_ip
+        and message.status_code is not None
+        and message.status_code >= 200
+    ]
+
+
+def _was_rejected(flow, request):
+    """True when the capture shows a final non-2xx answer and no 2xx."""
+    finals = _final_responses(flow, request)
+    return bool(finals) and not any(200 <= item.status_code < 300 for item in finals)
+
+
+def _answer_direction(flow, reinvite):
+    for message in _final_responses(flow, reinvite):
+        if 200 <= message.status_code < 300:
+            audio = [media for media in message.sdp_media if media.media_type == "audio"]
+            if audio:
+                return ", ".join(media.direction for media in audio)
+            return f"{message.status_code} sem SDP"
+    return "sem resposta 2xx na captura"
+
+
+def _hold_kind(media):
+    kinds = []
+    for item in media:
+        if item.port == 0:
+            kinds.append("porta 0")
+        elif item.direction in {"sendonly", "recvonly", "inactive"}:
+            kinds.append(f"a={item.direction}")
+        elif _address_is_unspecified(item.connection_address):
+            kinds.append(f"c={item.connection_address or 'ausente'}")
+    return ", ".join(kinds)
+
+
+def _call_end_time(flow):
+    byes = [
+        message.packet_time
+        for message in flow.messages
+        if message.is_request and message.method == "BYE"
+    ]
+    if byes:
+        return min(byes), "BYE"
+    return max(message.packet_time for message in flow.messages), "fim da captura"
+
+
+def _midcall_hold_risks(flow, initial):
+    """Re-INVITEs from the peer that put the FreeSWITCH leg on hold mid-call.
+
+    A carrier-side hold (sendonly/inactive re-INVITE) is valid SDP, but in
+    mod_callcenter queues it changes the media state of a leg that is bridged
+    or being offered to an agent, which has been seen to cross calls.
+    Re-INVITEs rejected with a final non-2xx do not change the media state.
+    A call that already started on hold is reported by the initial-offer rule."""
+    findings = []
+    initial_audio = [media for media in initial.sdp_media if media.media_type == "audio"]
+    already_on_hold = any(_is_hold_media(media) for media in initial_audio)
+    hold = None
+    for reinvite in _later_invites(flow, initial):
+        audio = [media for media in reinvite.sdp_media if media.media_type == "audio"]
+        if not audio or _was_rejected(flow, reinvite):
+            continue
+        on_hold = any(_is_hold_media(media) for media in audio)
+        if not on_hold:
+            if hold is not None:
+                findings.append(_midcall_hold_finding(flow, initial, *hold, resume=reinvite))
+            hold = None
+            already_on_hold = False
+        elif hold is None and not already_on_hold and reinvite.destination_ip == initial.destination_ip:
+            hold = (reinvite, [media for media in audio if _is_hold_media(media)])
+    if hold is not None:
+        findings.append(_midcall_hold_finding(flow, initial, *hold, resume=None))
+    return findings
+
+
+def _midcall_hold_finding(flow, initial, reinvite, media, resume):
+    start = reinvite.packet_time
+    if resume is not None:
+        end, end_reason = resume.packet_time, f"retomada pelo re-INVITE CSeq {resume.cseq_number}"
+    else:
+        end, end_reason = _call_end_time(flow)
+        end_reason = f"nao retomado ate {end_reason}"
+    elapsed = max(end - start, 0.0)
+    resumed = resume is not None
+    return Finding(
+        type="freeswitch_callcenter_midcall_hold",
+        severity="high",
+        confidence=0.85,
+        source_ip=reinvite.source_ip,
+        destination_ip=reinvite.destination_ip,
+        description=(
+            "O peer enviou um re-INVITE no meio da chamada colocando o audio em espera "
+            f"({_hold_kind(media)}). O SDP e valido, mas no mod_callcenter "
+            "um hold vindo da operadora altera o estado de midia da perna em fila ou em bridge com o "
+            "agente e pode causar chamadas cruzadas, audio mudo ou agente preso."
+            + ("" if resumed else " A chamada terminou ainda em espera.")
+        ),
+        evidence=[
+            *_base_evidence(flow, initial),
+            f"Hold re-INVITE: CSeq {reinvite.cseq_number} at +{start - initial.packet_time:.2f}s",
+            f"Hold path: {reinvite.source_ip}:{reinvite.source_port} -> {reinvite.destination_ip}:{reinvite.destination_port}",
+            f"Hold type: {_hold_kind(media)}",
+            *_media_evidence(media),
+            f"FreeSWITCH answer direction: {_answer_direction(flow, reinvite)}",
+            f"Hold duration: {elapsed:.2f}s ({end_reason})",
+            f"User-Agent: {initial.headers.get('user-agent', 'not present')}",
+            "Affected area: mod_callcenter member/agent bridge and media state",
+        ],
+        recommendation=(
+            "Peca a operadora/SBC para nao enviar hold (a=sendonly/inactive) em chamadas de entrada para a "
+            "fila, ou trate o re-INVITE no FreeSWITCH: avalie disable-hold no perfil Sofia, ignore o hold "
+            "da operadora antes do mod_callcenter e confirme que o agente nao recebe outra chamada enquanto "
+            "a perna esta em espera. Correlacione o Call-ID com os logs do mod_callcenter (member/agent UUID)."
         ),
     )

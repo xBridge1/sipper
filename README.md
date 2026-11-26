@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/xBridge1/sipper?label=release)](https://github.com/xBridge1/sipper/releases/latest)
 [![Release Windows](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml/badge.svg)](https://github.com/xBridge1/sipper/actions/workflows/release-windows.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-304%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-320%20passing-brightgreen)
 
 ![SIPPER](sipper/logo/splash.png)
 
@@ -13,12 +13,12 @@ O SIPPER transforma uma captura PCAP em uma visao operacional de problemas de re
 
 ## Download
 
-Versao atual: **SIPPER 1.4.0**.
+Versao atual: **SIPPER 1.5.0**.
 
-- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-Setup-1.4.0.exe)
-- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-portable-1.4.0.zip)
-- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.4.0/SIPPER-Setup-1.4.0.exe.sha256)
-- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.4.0)
+- [Baixar o instalador para Windows](https://github.com/xBridge1/sipper/releases/download/v1.5.0/SIPPER-Setup-1.5.0.exe)
+- [Baixar a versao portatil](https://github.com/xBridge1/sipper/releases/download/v1.5.0/SIPPER-portable-1.5.0.zip)
+- [Verificar o checksum SHA-256](https://github.com/xBridge1/sipper/releases/download/v1.5.0/SIPPER-Setup-1.5.0.exe.sha256)
+- [Consultar notas e arquivos do release](https://github.com/xBridge1/sipper/releases/tag/v1.5.0)
 
 ## Destaques
 
@@ -90,6 +90,7 @@ Versao atual: **SIPPER 1.4.0**.
 
 - Perfil opcional limitado aos IPs ou redes configurados pelo usuario.
 - Riscos relacionados a ofertas SDP `sendonly`, `recvonly`, `inactive` e midia desativada.
+- **Hold da operadora no meio da chamada** (re-INVITE `sendonly`/`inactive`/`c=0.0.0.0`) alarmado como risco para o `mod_callcenter` (chamadas cruzadas, audio mudo), com duracao do hold, resposta do FreeSWITCH e se a chamada terminou em espera.
 - Analise de identidade anonymous, headers de identidade, Request-URI, session timers, DTMF e enderecos RTP.
 - Alertas de compatibilidade para dialplan, `mod_sofia`, `mod_callcenter` e variaveis `sip_h_*`.
 
@@ -168,7 +169,7 @@ Execute toda a suite com o ambiente virtual ativo:
 python -m pytest
 ```
 
-A suite possui **304 testes automatizados**, incluindo um corpus de regressao de vereditos (`tests/corpus/`, com instrucoes para adicionar capturas reais) e fuzzing dos parsers com Hypothesis.
+A suite possui **320 testes automatizados**, incluindo um corpus de regressao de vereditos (`tests/corpus/`, com instrucoes para adicionar capturas reais) e fuzzing dos parsers com Hypothesis.
 
 Para medir desempenho, gere uma captura sintetica grande e analise-a:
 

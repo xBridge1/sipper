@@ -103,6 +103,8 @@ class SIPFlow:
     resume_events: int = 0
     media_on_hold: bool = False
     invite_transaction_keys: set[tuple] = field(default_factory=set)
+    # Media state before each INVITE offer, so a rejected offer can be undone.
+    media_offer_undo: dict[tuple, tuple] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.dialog_key:
@@ -350,6 +352,7 @@ def build_sip_flows(packets, tcp_blocks=None):
     """
     flows = {}
     initial_messages = {}
+    challenge_tags = {}
     messages = []
     tcp_packets = []
 
@@ -371,7 +374,7 @@ def build_sip_flows(packets, tcp_blocks=None):
             messages.extend(_extract_tcp_sip_messages(block))
 
     for message in sorted(messages, key=lambda item: item.packet_time):
-        _add_message_to_flow(flows, initial_messages, message)
+        _add_message_to_flow(flows, initial_messages, message, challenge_tags)
 
     return flows
 
@@ -440,16 +443,29 @@ def _pop_complete_sip_message(state):
     return payload[:message_length]
 
 
-def _add_message_to_flow(flows, initial_messages, message):
+def _add_message_to_flow(flows, initial_messages, message, challenge_tags=None):
     if message is None:
         return
 
     base_key = message.call_id
-    dialog_key = _resolve_dialog_key(
-        message,
-        flows,
-        initial_messages.get(base_key, []),
-    )
+    if challenge_tags is None:
+        challenge_tags = {}
+    if _is_auth_challenge(message):
+        challenge_tags.setdefault(base_key, set()).add(message.to_tag)
+    challenge = bool(message.to_tag) and message.to_tag in challenge_tags.get(base_key, ())
+
+    if challenge:
+        # A 401/407 challenge (and the ACK for it) is a final non-2xx
+        # response: it never creates a dialog (RFC 3261 12.1). Keep it with
+        # the INVITE/REGISTER it answers so the authenticated retry lands in
+        # the same flow and the challenge is seen as superseded.
+        dialog_key = _pre_dialog_flow_key(flows, base_key)
+    else:
+        dialog_key = _resolve_dialog_key(
+            message,
+            flows,
+            initial_messages.get(base_key, []),
+        )
 
     if dialog_key not in flows:
         if dialog_key != base_key and base_key in flows:
@@ -480,8 +496,39 @@ def _add_message_to_flow(flows, initial_messages, message):
 
     _record_flow_message(flow, message)
 
-    if message.to_tag is None:
+    if message.to_tag is None or challenge:
         initial_messages.setdefault(base_key, []).append(message)
+
+
+def is_auth_retry(flow, message):
+    """An INVITE outside the dialog (no To tag) sent after a 401/407 challenge.
+
+    It repeats the original request with credentials; it is not a re-INVITE."""
+    if message.to_tag:
+        return False
+    return any(
+        not earlier.is_request
+        and earlier.status_code in {401, 407}
+        and earlier.cseq_method == message.method
+        and earlier.packet_time <= message.packet_time
+        for earlier in flow.messages
+    )
+
+
+def _is_auth_challenge(message):
+    return (
+        not message.is_request
+        and message.status_code in {401, 407}
+        and bool(message.to_tag)
+    )
+
+
+def _pre_dialog_flow_key(flows, base_key):
+    """Flow holding the requests of a Call-ID before any dialog was formed."""
+    if base_key in flows:
+        return base_key
+    candidates = [key for key, flow in flows.items() if flow.call_id == base_key]
+    return candidates[-1] if candidates else base_key
 
 
 def _get_dialog_key(message):
@@ -537,11 +584,19 @@ def _record_flow_message(flow, message):
     if message.is_request and message.method == "INVITE":
         transaction_key = _invite_transaction_key(message)
         if transaction_key not in flow.invite_transaction_keys:
-            if flow.invites > 0:
+            if flow.invites > 0 and not is_auth_retry(flow, message):
                 flow.reinvites += 1
             flow.invite_transaction_keys.add(transaction_key)
             flow.invites += 1
+            flow.media_offer_undo[(message.source_ip, message.cseq_number)] = (
+                flow.media_on_hold,
+                flow.hold_events,
+                flow.resume_events,
+            )
             _track_media_operation(flow, message)
+
+    if not message.is_request and message.cseq_method == "INVITE" and message.status_code >= 200:
+        _settle_media_offer(flow, message)
 
     if message.is_request and message.method == "ACK":
         flow.acknowledgements += 1
@@ -594,6 +649,20 @@ def _record_flow_message(flow, message):
 
     if message.tcp_segmented:
         flow.tcp_segmented_messages += 1
+
+
+def _settle_media_offer(flow, response):
+    """Undo the hold/resume an INVITE offer applied when it was rejected.
+
+    The media state is applied when the offer is seen, so captures missing
+    the answer still count it; a final non-2xx means it never took effect."""
+    key = (response.destination_ip, response.cseq_number)
+    if key not in flow.media_offer_undo:
+        return
+    latest = next(reversed(flow.media_offer_undo))
+    undo = flow.media_offer_undo.pop(key)
+    if response.status_code >= 300 and key == latest:
+        flow.media_on_hold, flow.hold_events, flow.resume_events = undo
 
 
 def _track_media_operation(flow, message):
@@ -808,7 +877,8 @@ def _extract_cseq_number(value):
 
 def _invite_transaction_key(message):
     if message.cseq_number is not None:
-        return ("cseq", message.cseq_number)
+        # Each side of a dialog has its own CSeq space.
+        return ("cseq", message.source_ip, message.cseq_number)
     if message.via_branch:
         return ("branch", message.via_branch)
 
@@ -847,7 +917,25 @@ def get_terminal_sip_method_errors(flow, method, allow_unspecified=False):
         for response in responses
         if 400 <= response.status_code < 700
         and not _is_superseded_auth_challenge(responses, response)
+        and not _is_in_dialog_glare(flow, response)
     ]
+
+
+def _is_in_dialog_glare(flow, response):
+    """491 Request Pending inside an established dialog.
+
+    Both sides sent a re-INVITE/UPDATE at the same time; RFC 3261 14.1 has
+    the UAC retry after a random delay. It is negotiation, not a failure."""
+    if response.status_code != 491:
+        return False
+    return any(
+        not message.is_request
+        and message.cseq_method == "INVITE"
+        and message.status_code is not None
+        and 200 <= message.status_code < 300
+        and message.packet_time < response.packet_time
+        for message in flow.messages
+    )
 
 
 def get_successful_invite_responses(flow):
